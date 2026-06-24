@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dúvidas frequentes — Processo Seletivo IFRS</title>
+<style>
+  :root {
+    --verde-escuro: #1B5E3F;
+    --verde: #2C7A4D;
+    --verde-claro: #E7F2EA;
+    --dourado: #E8A33D;
+    --dourado-escuro: #C9852A;
+    --bg: #FBFAF7;
+    --texto: #243029;
+    --texto-suave: #5B6B62;
+    --branco: #FFFFFF;
+    --borda: #DCE6DF;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--texto);
+    font-family: 'Segoe UI', system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+  }
+
+  .topo {
+    background: linear-gradient(135deg, var(--verde-escuro) 0%, var(--verde) 100%);
+    color: var(--branco);
+    padding: 48px 24px 64px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .topo::before {
+    content: "";
+    position: absolute;
+    top: -60px;
+    right: -60px;
+    width: 220px;
+    height: 220px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 50%;
+  }
+
+  .topo::after {
+    content: "";
+    position: absolute;
+    bottom: -80px;
+    left: -40px;
+    width: 180px;
+    height: 180px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 50%;
+  }
+
+  .marca {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(255,255,255,0.15);
+    padding: 6px 16px 6px 10px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    margin-bottom: 22px;
+  }
+
+  .marca .quadradinhos {
+    display: grid;
+    grid-template-columns: 6px 6px;
+    grid-template-rows: 6px 6px;
+    gap: 2px;
+  }
+  .marca .quadradinhos span {
+    width: 6px; height: 6px;
+    border-radius: 1px;
+  }
+
+  .topo h1 {
+    margin: 0 0 14px;
+    font-size: clamp(28px, 5vw, 42px);
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    position: relative;
+  }
+
+  .topo p.sub {
+    margin: 0 auto;
+    max-width: 560px;
+    font-size: 17px;
+    color: rgba(255,255,255,0.92);
+    position: relative;
+  }
+
+  .trilha {
+    max-width: 760px;
+    margin: 36px auto -34px;
+    padding: 0 24px;
+    position: relative;
+    z-index: 2;
+  }
+
+  .trilha-card {
+    background: var(--branco);
+    border-radius: 16px;
+    box-shadow: 0 10px 30px rgba(27,94,63,0.15);
+    padding: 20px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .passo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 140px;
+  }
+
+  .passo .bolha {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    flex-shrink: 0;
+  }
+
+  .passo.ativo .bolha { background: var(--verde-claro); color: var(--verde-escuro); border: 2px solid var(--verde); }
+  .passo.proximo .bolha { background: #F4F4F4; color: var(--texto-suave); border: 2px dashed #C7C7C7; }
+
+  .passo-texto { font-size: 13.5px; color: var(--texto-suave); }
+  .passo-texto strong { display: block; font-size: 14.5px; color: var(--texto); font-weight: 700; }
+
+  .seta-passo {
+    color: #B9C7BE;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 70px 24px 30px;
+  }
+
+  .intro-busca {
+    margin-bottom: 28px;
+  }
+
+  .intro-busca label {
+    display: block;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--verde-escuro);
+    margin-bottom: 8px;
+  }
+
+  .busca-wrap {
+    position: relative;
+  }
+
+  .busca-wrap svg {
+    position: absolute;
+    left: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 18px;
+    height: 18px;
+    color: var(--texto-suave);
+  }
+
+  #busca {
+    width: 100%;
+    padding: 14px 16px 14px 46px;
+    border-radius: 12px;
+    border: 1.5px solid var(--borda);
+    background: var(--branco);
+    font-size: 16px;
+    color: var(--texto);
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+
+  #busca:focus {
+    border-color: var(--verde);
+    box-shadow: 0 0 0 3px rgba(44,122,77,0.13);
+  }
+
+  #contagem {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--texto-suave);
+  }
+
+  .faq-lista {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .faq-item {
+    background: var(--branco);
+    border: 1.5px solid var(--borda);
+    border-radius: 14px;
+    overflow: hidden;
+    transition: border-color 0.15s;
+  }
+
+  .faq-item.aberto {
+    border-color: var(--verde);
+  }
+
+  .faq-pergunta {
+    width: 100%;
+    background: none;
+    border: none;
+    text-align: left;
+    padding: 18px 20px;
+    font-size: 15.5px;
+    font-weight: 600;
+    color: var(--texto);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .faq-pergunta:hover { background: var(--verde-claro); }
+
+  .faq-pergunta .icone {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--verde-claro);
+    color: var(--verde-escuro);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 700;
+    transition: transform 0.2s ease, background 0.2s ease, color 0.2s ease;
+  }
+
+  .faq-item.aberto .faq-pergunta .icone {
+    background: var(--verde-escuro);
+    color: #fff;
+    transform: rotate(45deg);
+  }
+
+  .faq-resposta {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.25s ease;
+  }
+
+  .faq-resposta-inner {
+    padding: 0 20px 20px 20px;
+    font-size: 15px;
+    color: var(--texto-suave);
+    line-height: 1.65;
+  }
+
+  .faq-resposta-inner ol, .faq-resposta-inner ul {
+    margin: 10px 0 0;
+    padding-left: 20px;
+  }
+  .faq-resposta-inner li { margin-bottom: 4px; }
+
+  .sem-resultado {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--texto-suave);
+    display: none;
+  }
+  .sem-resultado .emoji { font-size: 32px; margin-bottom: 10px; display: block; }
+
+  .cta-chatbot {
+    margin: 48px auto 10px;
+    background: linear-gradient(135deg, var(--dourado) 0%, var(--dourado-escuro) 100%);
+    border-radius: 18px;
+    padding: 30px 28px;
+    color: #2b1c05;
+    box-shadow: 0 14px 30px rgba(201,133,42,0.25);
+  }
+
+  .cta-chatbot .selo {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.55);
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 12.5px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 14px;
+  }
+
+  .cta-chatbot h2 {
+    margin: 0 0 8px;
+    font-size: 22px;
+    font-weight: 800;
+  }
+
+  .cta-chatbot p {
+    margin: 0 0 20px;
+    font-size: 15px;
+    color: #4a3308;
+    max-width: 520px;
+  }
+
+  .cta-botao {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: #2b1c05;
+    color: #fff;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 15px;
+    padding: 13px 22px;
+    border-radius: 11px;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .cta-botao:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(0,0,0,0.18); }
+
+  footer {
+    text-align: center;
+    padding: 30px 24px 50px;
+    color: var(--texto-suave);
+    font-size: 13px;
+  }
+
+  footer strong { color: var(--verde-escuro); }
+
+  @media (max-width: 560px) {
+    .trilha-card { flex-direction: column; align-items: stretch; }
+    .seta-passo { display: none; }
+    .passo { justify-content: flex-start; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topo">
+  <span class="marca">
+  <span class="quadradinhos"><span></span><span></span><span></span><span></span></span> 
+    IFRS · CAMPUS IBIRUBÁ
+  </span>
+  <h1>Antes de tudo, vamos ver se sua dúvida já tem resposta</h1>
+  <p class="sub">Reunimos aqui as perguntas mais comuns sobre cursos e ingresso no IFRS Campus Ibirubá. É rápido e provavelmente sua resposta já está pronta aqui embaixo.</p>
+</div>
+
+<div class="trilha">
+  <div class="trilha-card">
+    <div class="passo ativo">
+      <div class="bolha">①</div>
+      <div class="passo-texto"><strong>Você está aqui</strong>Confira o FAQ</div>
+    </div>
+    <span class="seta-passo">→</span>
+    <div class="passo proximo">
+      <div class="bolha">②</div>
+      <div class="passo-texto"><strong>Não encontrou?</strong>Busque no edital</div>
+    </div>
+    <span class="seta-passo">→</span>
+
+<div class="passo proximo">
+  <div class="bolha">③</div
+      <div class="passo-texto">
+          <a href="http://localhost:8501">
+
+  <strong>Ainda com dúvida?</strong>
+  Fale com o IF Turing
+</a>
+  </div>
+</div>
+
+<main>
+
+  <div class="intro-busca">
+    <label for="busca">Digite uma palavra-chave da sua dúvida</label>
+    <div class="busca-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input type="text" id="busca" placeholder="ex.: distância, idade, custo, pós-graduação...">
+    </div>
+    <div id="contagem"></div>
+  </div>
+
+  <div class="faq-lista" id="faqLista">
+
+    <div class="faq-item">
+      <button class="faq-pergunta">
+        <span>Os cursos a distância (online) têm aulas ao vivo? Têm videoaulas? Fornecem apostila?</span>
+        <span class="icone">+</span>
+      </button>
+      <div class="faq-resposta">
+        <div class="faq-resposta-inner">
+          Os cursos a distância (EaD) do IFRS não têm aulas ao vivo. Cada curso tem sua própria dinâmica, podendo conter vídeos ou não. O IFRS não fornece apostilas — todo o material fica disponível na plataforma Moodle, e você pode imprimir se quiser. Acesse a plataforma Moodle para saber mais.
+        </div>
+      </div>
+    </div>
+
+    <div class="faq-item">
+      <button class="faq-pergunta">
+        <span>Quero mais informações sobre os cursos a distância (EaD)</span>
+        <span class="icone">+</span>
+      </button>
+      <div class="faq-resposta">
+        <div class="faq-resposta-inner">
+          Os cursos são online e abertos a qualquer interessado. Eles também são:
+          <ol>
+            <li>Totalmente gratuitos, inclusive o certificado</li>
+            <li>Totalmente online (não há aulas presenciais)</li>
+            <li>Acompanhados de certificado reconhecido pelo próprio IFRS</li>
+            <li>Sem limite de quantidade — você pode fazer quantos quiser</li>
+          </ol>
+          Para mais informações, acesse a página Moodle do IFRS.
+        </div>
+      </div>
+    </div>
+
+    <div class="faq-item">
+      <button class="faq-pergunta">
+        <span>Gostaria de cursar a pós-graduação no IFRS. Como devo fazer?</span>
+        <span class="icone">+</span>
+      </button>
+      <div class="faq-resposta">
+        <div class="faq-resposta-inner">
+          Os cursos de pós-graduação, como especializações e mestrados, têm editais próprios de seleção. Para saber mais, acesse a página de pós-graduação no Portal do IFRS.
+        </div>
+      </div>
+    </div>
+
+    <div class="faq-item">
+      <button class="faq-pergunta">
+        <span>Qual tipo de curso devo escolher caso eu queira fazer o ensino médio no IFRS?</span>
+        <span class="icone">+</span>
+      </button>
+      <div class="faq-resposta">
+        <div class="faq-resposta-inner">
+          Nos cursos técnicos integrados ao ensino médio, você faz o ensino médio e o curso técnico ao mesmo tempo, dentro do IFRS. Para se candidatar, é preciso já ter concluído ou estar concluindo o 9º ano do ensino fundamental (ou equivalente).
+        </div>
+      </div>
+    </div>
+
+    <div class="faq-item">
+      <button class="faq-pergunta">
+        <span>Há limite de idade para começar um curso no IFRS?</span>
+        <span class="icone">+</span>
+      </button>
+      <div class="faq-resposta">
+        <div class="faq-resposta-inner">
+          Não há limite de idade. A única exigência é em relação à formação do candidato:
+          <ul>
+            <li>Técnico integrado ao médio: ensino fundamental concluído</li>
+            <li>Técnico concomitante ao médio: estar cursando o ensino médio em outra escola</li>
+            <li>Técnico subsequente ou curso superior: ensino médio concluído</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="faq-item">
+      <button class="faq-pergunta">
+        <span>O que é um curso de extensão?</span>
+        <span class="icone">+</span>
+      </button>
+      <div class="faq-resposta">
+        <div class="faq-resposta-inner">
+          É uma atividade não regular, teórica e prática, voltada à capacitação, aperfeiçoamento, especialização e atualização profissional. É aberto para a população em geral.
+        </div>
+      </div>
+    </div>
+
+    <div class="faq-item">
+      <button class="faq-pergunta">
+        <span>Os cursos ofertados no IFRS são presenciais ou a distância?</span>
+        <span class="icone">+</span>
+      </button>
+      <div class="faq-resposta">
+        <div class="faq-resposta-inner">
+          Os cursos técnicos e superiores (graduações e pós-graduações) são presenciais, mas alguns têm parte da carga horária a distância. Os cursos de qualificação são a distância, e os de extensão podem ser presenciais ou a distância.
+        </div>
+      </div>
+    </div>
+
+    <div class="faq-item">
+      <button class="faq-pergunta">
+        <span>Preciso ter uma idade mínima para estudar no IFRS?</span>
+        <span class="icone">+</span>
+      </button>
+      <div class="faq-resposta">
+        <div class="faq-resposta-inner">
+          Não há idade mínima — a condição é a escolaridade:
+          <ul>
+            <li>Ensino médio + técnico integrado: ensino fundamental completo (exceção: integrado na modalidade EJA, que exige também 18 anos ou mais)</li>
+            <li>Técnico concomitante: estar cursando o ensino médio em outra escola</li>
+            <li>Técnico subsequente ou superior de graduação: ensino médio completo</li>
+            <li>Pós-graduação (especialização ou mestrado): graduação concluída</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="faq-item">
+      <button class="faq-pergunta">
+        <span>Existe algum custo para estudar no IFRS?</span>
+        <span class="icone">+</span>
+      </button>
+      <div class="faq-resposta">
+        <div class="faq-resposta-inner">
+          Não. Os cursos do IFRS são gratuitos, sem mensalidade. O único custo existente é a taxa de inscrição no Processo Seletivo para cursos técnicos e superiores.
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="sem-resultado" id="semResultado">
+    <span class="emoji">🔍</span>
+    Não encontramos nenhuma pergunta com esse termo.<br>
+    Sem problemas — é exatamente para isso que o IF Turing existe.
+  </div>
+
+</main>
+
+<script>
+  const itens = document.querySelectorAll('.faq-item');
+  itens.forEach(item => {
+    const btn = item.querySelector('.faq-pergunta');
+    const resposta = item.querySelector('.faq-resposta');
+    btn.addEventListener('click', () => {
+      const estaAberto = item.classList.contains('aberto');
+      itens.forEach(outro => {
+        outro.classList.remove('aberto');
+        outro.querySelector('.faq-resposta').style.maxHeight = null;
+      });
+      if (!estaAberto) {
+        item.classList.add('aberto');
+        resposta.style.maxHeight = resposta.scrollHeight + 'px';
+      }
+    });
+  });
+
+  const busca = document.getElementById('busca');
+  const contagem = document.getElementById('contagem');
+  const semResultado = document.getElementById('semResultado');
+  const faqLista = document.getElementById('faqLista');
+
+  busca.addEventListener('input', () => {
+    const termo = busca.value.trim().toLowerCase();
+    let visiveis = 0;
+    itens.forEach(item => {
+      const texto = item.textContent.toLowerCase();
+      const corresponde = texto.includes(termo);
+      item.style.display = corresponde ? '' : 'none';
+      if (corresponde) visiveis++;
+    });
+    if (termo === '') {
+      contagem.textContent = '';
+    } else {
+      contagem.textContent = visiveis + (visiveis === 1 ? ' pergunta encontrada' : ' perguntas encontradas');
+    }
+    semResultado.style.display = (visiveis === 0 && termo !== '') ? 'block' : 'none';
+    faqLista.style.display = (visiveis === 0 && termo !== '') ? 'none' : 'flex';
+  });
+</script>
+
+</body>
+</html>
