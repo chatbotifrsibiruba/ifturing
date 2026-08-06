@@ -1,12 +1,10 @@
 import os
-import pickle
 import requests
 import streamlit as st
-from pathlib import Path
 from haystack import Pipeline
-from haystack.components.embedders import SentenceTransformersTextEmbedder
-from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
-from haystack.document_stores.in_memory import InMemoryDocumentStore
+from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersTextEmbedder
+from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
+from haystack_integrations.document_stores.chroma import ChromaDocumentStore
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -37,16 +35,10 @@ st.caption("Assistente do Processo Seletivo — IFRS Campus Ibirubá")
 # ── Carrega índice ───────────────────────────────────────────────────
 @st.cache_resource(show_spinner="Carregando base de conhecimento...")
 def carregar_pipeline():
-    store_path = Path(PASTA_FAISS) / "store.pkl"
+    document_store = ChromaDocumentStore(persist_path=PASTA_FAISS)
 
-    if not store_path.exists():
+    if document_store.count_documents() == 0:
         return None
-
-    with open(store_path, "rb") as f:
-        documentos = pickle.load(f)
-
-    document_store = InMemoryDocumentStore()
-    document_store.write_documents(documentos)
 
     pipeline = Pipeline()
     pipeline.add_component(
@@ -55,10 +47,9 @@ def carregar_pipeline():
     )
     pipeline.add_component(
         "retriever",
-        InMemoryEmbeddingRetriever(document_store=document_store, top_k=5),
+        ChromaEmbeddingRetriever(document_store=document_store, top_k=5),
     )
     pipeline.connect("embedder.embedding", "retriever.query_embedding")
-
     return pipeline
 
 

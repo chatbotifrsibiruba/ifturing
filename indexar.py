@@ -11,9 +11,9 @@ from pathlib import Path
 from haystack import Pipeline
 from haystack.components.converters import PyPDFToDocument
 from haystack.components.preprocessors import DocumentSplitter, DocumentCleaner
-from haystack.components.embedders import SentenceTransformersDocumentEmbedder
+from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersDocumentEmbedder
 from haystack.components.writers import DocumentWriter
-from haystack.document_stores.in_memory import InMemoryDocumentStore
+from haystack_integrations.document_stores.chroma import ChromaDocumentStore
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -36,7 +36,7 @@ for a in arquivos:
 
 print("\n⏳ Indexando... (pode demorar alguns minutos na primeira vez)")
 
-document_store = InMemoryDocumentStore()
+document_store = ChromaDocumentStore(persist_path=PASTA_FAISS)  # reaproveita a mesma env var
 
 pipeline = Pipeline()
 pipeline.add_component("converter", PyPDFToDocument())
