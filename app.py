@@ -10,6 +10,7 @@ from haystack import Pipeline
 from haystack.components.embedders import SentenceTransformersTextEmbedder
 from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
 from haystack.document_stores.in_memory import InMemoryDocumentStore
+from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -45,7 +46,6 @@ MODELOS = {
     },
 }
 
-
 # ── Página ───────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="IF Turing — IFRS Ibirubá",
@@ -75,7 +75,7 @@ with st.sidebar:
     cfg = MODELOS[modelo_selecionado]
     st.markdown(f"**Tipo:** `{cfg['tipo']}`")
     st.markdown(f"**Modelo:** `{cfg['modelo']}`")
-    st.markdown(f"**Onde roda:** {cfg['descricao']}")
+    st.markdown(f"**Onde roda:** {cfg['descricao']}`")
     st.markdown("---")
     st.markdown("## 📊 Logs desta sessão")
     if "logs" in st.session_state and st.session_state.logs:
@@ -148,6 +148,33 @@ if pipeline is None:
     st.stop()
 
 # ── Funções RAG ──────────────────────────────────────────────────────
+def chamar_groq(prompt: str, modelo: str) -> tuple[str, int]:
+    client = Groq(api_key=GROQ_API_KEY)
+    response = client.chat.completions.create(
+        model=modelo,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=1024,
+        temperature=0.3,
+    )
+    return response.choices[0].message.content, response.usage.total_tokens
+
+
+def chamar_ollama(prompt: str, modelo: str) -> tuple[str, int]:
+    r = requests.post(
+        f"{OLLAMA_URL}/api/generate",
+        json={
+            "model": modelo,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.3, "num_predict": 1024},
+        },
+        timeout=120,
+    )
+    r.raise_for_status()
+    data = r.json()
+    return data["response"], data.get("eval_count", 0)
+
+
 def perguntar_llm(pergunta: str, contexto: str) -> tuple[str, int]:
     prompt = f"""Você é um assistente especializado nos documentos relacionados ao processo seletivo do IFRS.
 Sua função é guiar as pessoas interessadas em entrar na instituição de forma inclusiva e acessível.
@@ -165,7 +192,6 @@ Resposta:"""
         return chamar_groq(prompt, cfg["modelo"])
     else:
         return chamar_ollama(prompt, cfg["modelo"])
-
 
 
 def responder(pergunta: str) -> tuple[str, float, int, int]:
@@ -198,7 +224,6 @@ def salvar_log(pergunta: str, resposta: str, tempo: float, tokens: int, docs: in
     log_file = LOG_PATH / f"log_{datetime.date.today()}.jsonl"
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(json.dumps(entrada, ensure_ascii=False) + "\n")
-
 
 
 # ── Histórico de chat ────────────────────────────────────────────────
