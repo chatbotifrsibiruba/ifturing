@@ -10,7 +10,6 @@ from haystack import Pipeline
 from haystack.components.embedders import SentenceTransformersTextEmbedder
 from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
 from haystack.document_stores.in_memory import InMemoryDocumentStore
-from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -19,6 +18,7 @@ load_dotenv()
 PASTA_FAISS   = os.getenv("PASTA_FAISS",   "./faiss_index")
 GROQ_API_KEY  = os.getenv("GROQ_API_KEY",  "")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",    "http://localhost:11434")
+MODELO_OLLAMA = os.getenv("MODELO_OLLAMA", "llama3:latest")
 LOG_PATH      = Path("./logs")
 LOG_PATH.mkdir(exist_ok=True)
 
@@ -30,7 +30,7 @@ MODELOS = {
     },
     "🖥️ LLaMA 3 (Ollama local)": {
         "tipo": "ollama",
-        "modelo": "llama3:latest",
+        "modelo": MODELO_OLLAMA,
         "descricao": "Local no servidor",
     },
     "🖥️ Mistral 7B (Ollama local)": {
@@ -44,6 +44,7 @@ MODELOS = {
         "descricao": "Local no servidor",
     },
 }
+
 
 # ── Página ───────────────────────────────────────────────────────────
 st.set_page_config(
@@ -147,33 +148,6 @@ if pipeline is None:
     st.stop()
 
 # ── Funções RAG ──────────────────────────────────────────────────────
-def chamar_groq(prompt: str, modelo: str) -> tuple[str, int]:
-    client = Groq(api_key=GROQ_API_KEY)
-    response = client.chat.completions.create(
-        model=modelo,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=1024,
-        temperature=0.3,
-    )
-    return response.choices[0].message.content, response.usage.total_tokens
-
-
-def chamar_ollama(prompt: str, modelo: str) -> tuple[str, int]:
-    r = requests.post(
-        f"{OLLAMA_URL}/api/generate",
-        json={
-            "model": modelo,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.3, "num_predict": 1024},
-        },
-        timeout=120,
-    )
-    r.raise_for_status()
-    data = r.json()
-    return data["response"], data.get("eval_count", 0)
-
-
 def perguntar_llm(pergunta: str, contexto: str) -> tuple[str, int]:
     prompt = f"""Você é um assistente especializado nos documentos relacionados ao processo seletivo do IFRS.
 Sua função é guiar as pessoas interessadas em entrar na instituição de forma inclusiva e acessível.
@@ -191,6 +165,7 @@ Resposta:"""
         return chamar_groq(prompt, cfg["modelo"])
     else:
         return chamar_ollama(prompt, cfg["modelo"])
+
 
 
 def responder(pergunta: str) -> tuple[str, float, int, int]:
@@ -223,6 +198,7 @@ def salvar_log(pergunta: str, resposta: str, tempo: float, tokens: int, docs: in
     log_file = LOG_PATH / f"log_{datetime.date.today()}.jsonl"
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(json.dumps(entrada, ensure_ascii=False) + "\n")
+
 
 
 # ── Histórico de chat ────────────────────────────────────────────────
