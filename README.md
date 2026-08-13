@@ -9,6 +9,7 @@ Chatbot baseado em RAG (Retrieval-Augmented Generation) que responde dúvidas so
 ## 📋 Sumário
 
 - [Sobre o projeto](#sobre-o-projeto)
+- [Por que apenas modelos locais](#por-que-apenas-modelos-locais)
 - [Funcionalidades](#funcionalidades)
 - [Arquitetura](#arquitetura)
 - [Pré-requisitos](#pré-requisitos)
@@ -34,15 +35,30 @@ O **IF Turing** tem dois objetivos integrados:
 
 ---
 
+## Por que apenas modelos locais
+
+O projeto foi deliberadamente limitado a modelos executados localmente via Ollama. Essa decisão tem quatro razões principais:
+
+**Comparação justa de hardware.** Os três modelos (LLaMA 3 8B, Mistral 7B e Gemma 2 27B) rodam no mesmo servidor do IFRS, sob as mesmas condições de CPU, GPU e RAM. Isso torna a comparação de latência e throughput controlada e replicável. Um modelo em nuvem mediria essencialmente a velocidade do datacenter do provedor externo — não do ambiente que o IFRS efetivamente opera.
+
+**Reprodutibilidade e independência.** Modelos locais não dependem de disponibilidade externa, rate limits, políticas de uso de terceiros ou mudanças de contrato. Qualquer colaborador com acesso ao servidor de pesquisa consegue replicar os experimentos na íntegra.
+
+**Sem custo por token.** A avaliação completa (100 perguntas × 3 modelos = 300 chamadas) e o uso contínuo em produção não geram custos variáveis, aproveitando o servidor de pesquisa já disponível na instituição (64 GB RAM, GPU dedicada).
+
+**Isolamento da variável "modelo".** O artigo compara especificamente o impacto da escolha do LLM mantendo fixos o retriever e os embeddings. Rodar todos os modelos em ambiente equivalente isola essa variável e fortalece as conclusões.
+
+O projeto não depende de nenhuma API externa paga. Toda a inferência é executada na infraestrutura local do IFRS via Ollama.
+
+---
+
 ## 🚀 Funcionalidades
 
 - **Chat RAG** com respostas fundamentadas nos PDFs oficiais do processo seletivo
 - **Dois modos de interface** selecionáveis em tempo real:
   - Modo usuário final — chat limpo, voltado ao candidato, sem exposição de métricas
   - Modo análise detalhada — sidebar com seleção de modelo, métricas por consulta e exportação de dados
-- **Suporte a múltiplos LLMs**, trocáveis em runtime sem reiniciar o app:
-  - LLaMA 3.3 70B via Groq API (nuvem)
-  - LLaMA 3 8B, Mistral 7B e Gemma 2 27B via Ollama (execução local no servidor)
+- **Suporte a 3 LLMs locais**, trocáveis em runtime sem reiniciar o app:
+  - LLaMA 3 8B, Mistral 7B e Gemma 2 27B via Ollama (execução local no servidor de pesquisa)
 - **Instrumentação completa** por consulta: latência total, latência de retrieval, latência LLM, tokens de entrada/saída, throughput (tokens/s), delta de RAM, scores de similaridade dos chunks recuperados
 - **Logs automáticos** em formato JSONL diário, em `logs/`
 - **Avaliação automática** com RAGAS contra o Golden Dataset (com fallback para similaridade Jaccard)
@@ -78,7 +94,7 @@ PDFs oficiais
 │        ↓                                │
 │  Contexto (chunks relevantes)           │
 │        ↓                                │
-│  LLM selecionado (Groq ou Ollama)       │
+│  LLM local via Ollama                   │
 │        ↓                                │
 │  Resposta + métricas                    │
 └─────────────────────────────────────────┘
@@ -101,9 +117,7 @@ PDFs oficiais
 - Python 3.11 ou superior
 - pip
 - Git
-- Ollama (opcional, apenas para executar modelos locais)
-
-A chave da API Groq é necessária para o modelo em nuvem (LLaMA 3.3 70B). Obtenha uma gratuitamente em [console.groq.com](https://console.groq.com).
+- Ollama — obrigatório, pois todos os modelos rodam localmente (ver seção [Configuração de modelos locais (Ollama)](#configuração-de-modelos-locais-ollama))
 
 ---
 
@@ -161,21 +175,19 @@ copy .env.example .env
 Abra o arquivo `.env` e preencha os valores:
 
 ```dotenv
-# Chave da API Groq (obtenha em https://console.groq.com)
-GROQ_API_KEY=sua_chave_aqui
-
 # Pasta com os PDFs do processo seletivo
 PASTA_DOCS=./documentos
 
 # Pasta onde o índice serializado será salvo
 PASTA_FAISS=./faiss_index
 
-# URL do servidor Ollama (apenas se usar modelos locais)
+# URL do servidor Ollama
 OLLAMA_URL=http://localhost:11434
 
-# Modelo padrão do Ollama (apenas se usar modelos locais)
+# Modelo padrão do Ollama (usado no modo usuário final)
 MODELO_OLLAMA=llama3:latest
 ```
+
 
 ### 6. Adicionar os PDFs
 
@@ -220,26 +232,33 @@ streamlit run app.py --server.address 0.0.0.0 --server.port 8501
 Execute uma avaliação para cada modelo que deseja comparar no artigo. Os resultados são acumulados no mesmo CSV a cada execução.
 
 ```bash
-# Avaliação com Groq (nuvem)
+# LLaMA 3 8B (modelo padrão)
 python avaliar.py \
   --dataset golden_dataset.csv \
   --branch main \
-  --tipo groq \
-  --modelo llama-3.3-70b-versatile
+  --tipo ollama \
+  --modelo llama3
 
-# Avaliação com Ollama (local)
+# Mistral 7B
 python avaliar.py \
   --dataset golden_dataset.csv \
   --branch exp/mistral \
   --tipo ollama \
   --modelo mistral
 
+# Gemma 2 27B
+python avaliar.py \
+  --dataset golden_dataset.csv \
+  --branch exp/gemma27b \
+  --tipo ollama \
+  --modelo gemma2:27b
+
 # Teste rápido com 10 perguntas
 python avaliar.py \
   --dataset golden_dataset.csv \
   --branch main \
-  --tipo groq \
-  --modelo llama-3.3-70b-versatile \
+  --tipo ollama \
+  --modelo llama3 \
   --limite 10
 ```
 
@@ -385,7 +404,7 @@ ifturing/
 
 | Branch | Uso |
 |---|---|
-| `main` | Versão estável — configuração de referência do artigo (Groq / LLaMA 3.3 70B) |
+| `main` | Versão estável — configuração de referência do artigo (LLaMA 3 8B via Ollama) |
 | `exp/<nome>` | Experimentos com configurações alternativas (ex: `exp/mistral`, `exp/gemma27b`, `exp/top-k-10`) |
 
 Ao testar uma nova configuração de modelo ou parâmetro de retrieval, crie uma branch `exp/` e rode `avaliar.py` com `--branch exp/<nome>`. O CSV acumulativo permite comparar todas as configurações na mesma análise final.

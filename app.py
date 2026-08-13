@@ -12,14 +12,12 @@ from haystack import Pipeline
 from haystack.components.embedders import SentenceTransformersTextEmbedder
 from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
 from haystack.document_stores.in_memory import InMemoryDocumentStore
-from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # ── Configurações ────────────────────────────────────────────────────
 PASTA_FAISS   = os.getenv("PASTA_FAISS",   "./faiss_index")
-GROQ_API_KEY  = os.getenv("GROQ_API_KEY",  "")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",    "http://localhost:11434")
 MODELO_OLLAMA = os.getenv("MODELO_OLLAMA", "llama3:latest")
 MODELO_EMB    = "intfloat/multilingual-e5-base"
@@ -27,12 +25,8 @@ TOP_K         = 5
 LOG_PATH      = Path("./logs")
 LOG_PATH.mkdir(exist_ok=True)
 
+# Apenas modelos locais via Ollama — decisão documentada no README (seção "Por que apenas modelos locais")
 MODELOS = {
-    "🌐 LLaMA 3.3 70B (Groq)": {
-        "tipo": "groq", "modelo": "llama-3.3-70b-versatile",
-        "descricao": "Nuvem via Groq API", "params_b": 70.0,
-        "quantizacao": "FP16 (servidor Groq)",
-    },
     "🖥️ LLaMA 3 (Ollama local)": {
         "tipo": "ollama", "modelo": MODELO_OLLAMA,
         "descricao": "Local no servidor", "params_b": 8.0, "quantizacao": "Q4_0",
@@ -48,7 +42,7 @@ MODELOS = {
 }
 
 # Modelo padrão usado no modo simples (usuário final não escolhe)
-MODELO_PADRAO_SIMPLES = "🌐 LLaMA 3.3 70B (Groq)"
+MODELO_PADRAO_SIMPLES = "🖥️ LLaMA 3 (Ollama local)"
 
 # ── Metadados do ambiente ────────────────────────────────────────────
 @st.cache_data
@@ -246,23 +240,6 @@ if pipeline is None:
     st.stop()
 
 # ── Funções RAG ──────────────────────────────────────────────────────
-def chamar_groq(prompt: str, modelo: str) -> dict:
-    client = Groq(api_key=GROQ_API_KEY)
-    response = client.chat.completions.create(
-        model=modelo,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=1024,
-        temperature=0.3,
-    )
-    u = response.usage
-    return {
-        "texto": response.choices[0].message.content,
-        "tokens_entrada": u.prompt_tokens,
-        "tokens_saida": u.completion_tokens,
-        "tokens_total": u.total_tokens,
-        "tempo_carga_s": 0.0,
-    }
-
 def chamar_ollama(prompt: str, modelo: str) -> dict:
     r = requests.post(
         f"{OLLAMA_URL}/api/generate",
@@ -295,8 +272,6 @@ Contexto:
 
 Pergunta: {pergunta}
 Resposta:"""
-    if cfg["tipo"] == "groq":
-        return chamar_groq(prompt, cfg["modelo"])
     return chamar_ollama(prompt, cfg["modelo"])
 
 def responder(pergunta: str) -> dict:

@@ -19,17 +19,17 @@ INSTALAÇÃO (uma vez):
     pip install ragas datasets pandas openpyxl
 
 USO:
-    # Groq (nuvem)
-    python avaliar.py --dataset golden_dataset.csv --branch main \
-        --tipo groq --modelo llama-3.3-70b-versatile
+    # LLaMA 3 8B (modelo de referência)
+    python avaliar.py --dataset golden_dataset.csv --branch main --modelo llama3
 
-    # Ollama (local)
-    python avaliar.py --dataset golden_dataset.csv --branch exp/mistral \
-        --tipo ollama --modelo mistral
+    # Mistral 7B
+    python avaliar.py --dataset golden_dataset.csv --branch exp/mistral --modelo mistral
+
+    # Gemma 2 27B
+    python avaliar.py --dataset golden_dataset.csv --branch exp/gemma27b --modelo gemma2:27b
 
     # Limitar a N perguntas para um teste rápido
-    python avaliar.py --dataset golden_dataset.csv --branch main \
-        --tipo groq --modelo llama-3.3-70b-versatile --limite 10
+    python avaliar.py --dataset golden_dataset.csv --branch main --modelo llama3 --limite 10
 
 Gera:
     relatorio_ragas.csv       → uma linha por pergunta, todas as branches juntas
@@ -46,7 +46,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 OLLAMA_URL   = os.getenv("OLLAMA_URL", "http://localhost:11434")
 PASTA_FAISS  = os.getenv("PASTA_FAISS", "./faiss_index")
 MODELO_EMB   = "intfloat/multilingual-e5-base"
@@ -103,26 +102,6 @@ def carregar_pipeline():
 
 
 # ── Chamadas de LLM ──────────────────────────────────────────────────
-def chamar_groq(prompt: str, modelo: str) -> dict:
-    from groq import Groq
-    client = Groq(api_key=GROQ_API_KEY)
-    t0 = time.perf_counter()
-    response = client.chat.completions.create(
-        model=modelo,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=1024,
-        temperature=0.3,
-    )
-    tempo = time.perf_counter() - t0
-    u = response.usage
-    return {
-        "texto": response.choices[0].message.content,
-        "tokens_entrada": u.prompt_tokens,
-        "tokens_saida": u.completion_tokens,
-        "tempo_llm_s": round(tempo, 3),
-    }
-
-
 def chamar_ollama(prompt: str, modelo: str) -> dict:
     import requests
     t0 = time.perf_counter()
@@ -158,7 +137,7 @@ Pergunta: {pergunta}
 Resposta:"""
 
 
-def responder(pipeline, pergunta: str, tipo: str, modelo: str) -> dict:
+def responder(pipeline, pergunta: str, modelo: str) -> dict:
     t0 = time.perf_counter()
     resultado = pipeline.run({"embedder": {"text": pergunta}})
     docs = resultado["retriever"]["documents"]
@@ -176,11 +155,7 @@ def responder(pipeline, pergunta: str, tipo: str, modelo: str) -> dict:
 
     contexto = "\n\n---\n\n".join([d.content for d in docs])
     prompt = PROMPT_TEMPLATE.format(contexto=contexto, pergunta=pergunta)
-
-    if tipo == "groq":
-        r = chamar_groq(prompt, modelo)
-    else:
-        r = chamar_ollama(prompt, modelo)
+    r = chamar_ollama(prompt, modelo)
 
     return {
         "resposta": r["texto"],
@@ -259,14 +234,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", required=True, help="CSV ou XLSX com pergunta,resposta_esperada")
     parser.add_argument("--branch",  required=True, help="Nome da branch/config (ex: main, exp/mistral)")
-    parser.add_argument("--tipo",    required=True, choices=["groq", "ollama"])
-    parser.add_argument("--modelo",  required=True, help="ID do modelo (ex: llama-3.3-70b-versatile, mistral)")
+    parser.add_argument("--modelo",  required=True, help="ID do modelo Ollama (ex: llama3, mistral, gemma2:27b)")
     parser.add_argument("--limite",  type=int, default=None, help="Limitar número de perguntas (teste rápido)")
     parser.add_argument("--saida",   default="relatorio_ragas.csv")
     args = parser.parse_args()
 
     print(f"\n🌿 Branch/config: {args.branch}")
-    print(f"🤖 Modelo: {args.modelo} ({args.tipo})")
+    print(f"🤖 Modelo: {args.modelo} (ollama)")
 
     dados = carregar_dataset(args.dataset, args.limite)
     print(f"📋 {len(dados)} perguntas carregadas do Golden Dataset\n")
@@ -282,7 +256,7 @@ def main():
         print(f"  ⏳ [{i}/{len(dados)}] {pergunta[:55]}...")
 
         try:
-            r = responder(pipeline, pergunta, args.tipo, args.modelo)
+            r = responder(pipeline, pergunta, args.modelo)
         except Exception as e:
             print(f"     ❌ erro: {e}")
             r = {"resposta": "", "contexto": "", "tempo_retrieval_s": 0, "tempo_llm_s": 0,
@@ -296,7 +270,7 @@ def main():
         linhas_brutas.append({
             "branch": args.branch,
             "modelo": args.modelo,
-            "tipo": args.tipo,
+            "tipo": "ollama",
             "pergunta": pergunta,
             "resposta_esperada": esperada,
             "resposta_gerada": r["resposta"][:300].replace("\n", " "),
@@ -350,7 +324,7 @@ def main():
     linha_agg = {
         "branch": args.branch,
         "modelo": args.modelo,
-        "tipo": args.tipo,
+        "tipo": "ollama",
         "n_perguntas": len(dados),
         "tempo_retrieval_medio_s": media("tempo_retrieval_s"),
         "tempo_llm_medio_s": media("tempo_llm_s"),

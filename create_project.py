@@ -64,20 +64,6 @@ with st.sidebar:
     st.image("https://ifrs.edu.br/wp-content/uploads/2022/03/logo-ifrs-verde.png", width=200)
     st.title("⚙️ Configurações")
     
-    # Configuração da API Key
-    st.subheader("🔑 API Key")
-    groq_api_key = st.text_input(
-        "Groq API Key",
-        type="password",
-        value=os.getenv("GROQ_API_KEY", ""),
-        help="Insira sua chave da API Groq"
-    )
-    
-    if groq_api_key:
-        os.environ["GROQ_API_KEY"] = groq_api_key
-    
-    st.divider()
-    
     # Upload de documentos
     st.subheader("📄 Documentos")
     uploaded_files = st.file_uploader(
@@ -103,7 +89,7 @@ with st.sidebar:
                     documentos = processar_documentos(pdf_paths)
                     
                     if documentos:
-                        st.session_state.rag_engine = RAGEngine(documentos, groq_api_key)
+                        st.session_state.rag_engine = RAGEngine(documentos)
                         st.session_state.documentos_carregados = True
                         
                         os.makedirs("faiss_index", exist_ok=True)
@@ -119,7 +105,7 @@ with st.sidebar:
         try:
             with open("faiss_index/store.pkl", "rb") as f:
                 documentos = pickle.load(f)
-                st.session_state.rag_engine = RAGEngine(documentos, groq_api_key)
+                st.session_state.rag_engine = RAGEngine(documentos)
                 st.session_state.documentos_carregados = True
                 st.success("✅ Índice carregado!")
                 st.rerun()
@@ -258,14 +244,17 @@ st.markdown("""
 from haystack.components.embedders import SentenceTransformersTextEmbedder
 from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
 from haystack.document_stores.in_memory import InMemoryDocumentStore
-from groq import Groq
+import requests
 import os
 
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+MODELO_OLLAMA = os.getenv("MODELO_OLLAMA", "llama3:latest")
+
 class RAGEngine:
-    def __init__(self, documentos, groq_api_key=None):
+    def __init__(self, documentos):
         self.document_store = InMemoryDocumentStore()
         self.document_store.write_documents(documentos)
-        
+
         self.pipeline = Pipeline()
         self.pipeline.add_component('embedder', SentenceTransformersTextEmbedder(
             model='intfloat/multilingual-e5-base'
@@ -275,24 +264,18 @@ class RAGEngine:
             top_k=5
         ))
         self.pipeline.connect('embedder.embedding', 'retriever.query_embedding')
-        
-        api_key = groq_api_key or os.getenv("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("GROQ_API_KEY não encontrada")
-        
-        self.groq_client = Groq(api_key=api_key)
-    
+
     def consultar(self, pergunta):
         resultado = self.pipeline.run({'embedder': {'text': pergunta}})
         docs = resultado['retriever']['documents']
-        
+
         if not docs:
             return '⚠️ Nenhum trecho relevante encontrado nos documentos do processo seletivo.'
-        
+
         contexto = '\\n\\n---\\n\\n'.join([d.content for d in docs])
-        return self._perguntar_groq(pergunta, contexto)
-    
-    def _perguntar_groq(self, pergunta, contexto):
+        return self._perguntar_ollama(pergunta, contexto)
+
+    def _perguntar_ollama(self, pergunta, contexto):
         prompt = f"""Você é um assistente especializado nos documentos relacionados ao processo seletivo do IFRS Campus Ibirubá.
 Responda à pergunta abaixo usando APENAS o contexto fornecido.
 
@@ -302,14 +285,14 @@ Contexto:
 Pergunta: {pergunta}
 Resposta:"""
 
-        response = self.groq_client.chat.completions.create(
-            model='llama-3.3-70b-versatile',
-            messages=[{'role': 'user', 'content': prompt}],
-            max_tokens=1024,
-            temperature=0.3
+        r = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={"model": MODELO_OLLAMA, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.3, "num_predict": 1024}},
+            timeout=300,
         )
-        
-        return response.choices[0].message.content
+        r.raise_for_status()
+        return r.json().get("response", "")
 ''',
     
     "utils/document_processor.py": '''from haystack import Pipeline
@@ -352,19 +335,21 @@ def processar_documentos(pdf_paths):
 haystack-ai>=2.0.0
 sentence-transformers>=2.2.0
 faiss-cpu>=1.7.4
-groq>=0.4.0
+requests>=2.31.0
 pypdf>=3.0.0
 pydantic>=2.0.0
 torch>=2.0.0
 numpy>=1.24.0
 ''',
     
-    ".env.example": '''# Chave da API Groq
-GROQ_API_KEY=sua_chave_aqui
+    ".env.example": '''# URL do servidor Ollama
+OLLAMA_URL=http://localhost:11434
 
-# Configurações do modelo
+# Modelo Ollama a utilizar
+MODELO_OLLAMA=llama3:latest
+
+# Configurações do modelo de embeddings
 MODEL_NAME=intfloat/multilingual-e5-base
-LLM_MODEL=llama-3.3-70b-versatile
 ''',
     
     ".gitignore": '''# Python
