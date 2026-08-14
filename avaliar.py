@@ -200,6 +200,7 @@ def montar_juiz_maritaca():
         api_key=MARITACA_API_KEY,
         base_url=MARITACA_BASE_URL,
         temperature=0.0,
+        n=1,  # a API da Maritaca não aceita n>1 (múltiplas gerações por chamada)
     )
     return LangchainLLMWrapper(chat)
 
@@ -250,6 +251,18 @@ def avaliar_com_ragas(perguntas, respostas, contextos, resp_esperadas) -> dict:
         juiz_llm = montar_juiz_maritaca()
         juiz_embeddings = montar_embeddings_juiz()
 
+        # A API da Maritaca não aceita n>1 (múltiplas gerações numa única
+        # chamada): "Sorry, we currently don't support making more than
+        # one request at a time. Please change the value of 'n' to 1."
+        # Métricas como faithfulness e answer_relevancy usam múltiplas
+        # gerações por padrão (via `strictness`) para checagem de
+        # consistência interna. Forçamos strictness=1 em todas as
+        # métricas que tiverem esse atributo, para ficar compatível.
+        metricas = [faithfulness, answer_relevancy, context_precision, context_recall, answer_correctness]
+        for m in metricas:
+            if hasattr(m, "strictness"):
+                m.strictness = 1
+
         dataset = Dataset.from_dict({
             "question":       perguntas,
             "answer":         respostas,
@@ -273,7 +286,7 @@ def avaliar_com_ragas(perguntas, respostas, contextos, resp_esperadas) -> dict:
 
         resultado = evaluate(
             dataset,
-            metrics=[faithfulness, answer_relevancy, context_precision, context_recall, answer_correctness],
+            metrics=metricas,
             llm=juiz_llm,
             embeddings=juiz_embeddings,
             run_config=run_config,
