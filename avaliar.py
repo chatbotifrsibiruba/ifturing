@@ -7,6 +7,12 @@ elaborado pelo Vitório e Lorenzo), roda cada pergunta contra o RAG do
 IF Turing, e calcula métricas RAGAS comparando a resposta gerada com a
 resposta esperada.
 
+O juiz RAGAS (LLM que avalia faithfulness, relevancy, etc.) usa a
+Maritaca AI (API compatível com OpenAI), evitando dependência da OpenAI.
+Os modelos avaliados continuam rodando 100% localmente via Ollama —
+a Maritaca é usada apenas na etapa de avaliação/julgamento, não no
+chatbot em produção.
+
 ────────────────────────────────────────────────────────────────────
 FORMATO ESPERADO DO GOLDEN DATASET (CSV ou XLSX, exportado do Drive):
 
@@ -16,20 +22,20 @@ FORMATO ESPERADO DO GOLDEN DATASET (CSV ou XLSX, exportado do Drive):
 ────────────────────────────────────────────────────────────────────
 
 INSTALAÇÃO (uma vez):
-    pip install ragas datasets pandas openpyxl
+    pip install ragas datasets pandas openpyxl langchain-openai
+
+CONFIGURAÇÃO (.env):
+    MARITACA_API_KEY=sua_chave_aqui
+    MARITACA_BASE_URL=https://chat.maritaca.ai/api
+    MARITACA_MODEL=sabia-3
 
 USO:
-    # Groq (nuvem)
-    python avaliar.py --dataset golden_dataset.csv --branch main \
-        --tipo groq --modelo llama-3.3-70b-versatile
-
-    # Ollama (local)
-    python avaliar.py --dataset golden_dataset.csv --branch exp/mistral \
-        --tipo ollama --modelo mistral
+    python avaliar.py --dataset golden_dataset.csv --branch llama3 --modelo llama3
+    python avaliar.py --dataset golden_dataset.csv --branch mistral --modelo mistral
+    python avaliar.py --dataset golden_dataset.csv --branch gemma --modelo gemma2:27b
 
     # Limitar a N perguntas para um teste rápido
-    python avaliar.py --dataset golden_dataset.csv --branch main \
-        --tipo groq --modelo llama-3.3-70b-versatile --limite 10
+    python avaliar.py --dataset golden_dataset.csv --branch llama3 --modelo llama3 --limite 10
 
 Gera:
     relatorio_ragas.csv       → uma linha por pergunta, todas as branches juntas
@@ -46,10 +52,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-OLLAMA_URL   = os.getenv("OLLAMA_URL", "http://localhost:11434")
-PASTA_FAISS  = os.getenv("PASTA_FAISS", "./faiss_index")
-MODELO_EMB   = "intfloat/multilingual-e5-base"
+OLLAMA_URL         = os.getenv("OLLAMA_URL", "http://localhost:11434")
+PASTA_FAISS        = os.getenv("PASTA_FAISS", "./faiss_index")
+MODELO_EMB         = "intfloat/multilingual-e5-base"
+
+MARITACA_API_KEY   = os.getenv("MARITACA_API_KEY", "")
+MARITACA_BASE_URL  = os.getenv("MARITACA_BASE_URL", "https://chat.maritaca.ai/api")
+MARITACA_MODEL     = os.getenv("MARITACA_MODEL", "sabia-3")
 
 
 # ── Carrega o Golden Dataset ─────────────────────────────────────────
@@ -102,27 +111,7 @@ def carregar_pipeline():
     return pipeline
 
 
-# ── Chamadas de LLM ──────────────────────────────────────────────────
-def chamar_groq(prompt: str, modelo: str) -> dict:
-    from groq import Groq
-    client = Groq(api_key=GROQ_API_KEY)
-    t0 = time.perf_counter()
-    response = client.chat.completions.create(
-        model=modelo,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=1024,
-        temperature=0.3,
-    )
-    tempo = time.perf_counter() - t0
-    u = response.usage
-    return {
-        "texto": response.choices[0].message.content,
-        "tokens_entrada": u.prompt_tokens,
-        "tokens_saida": u.completion_tokens,
-        "tempo_llm_s": round(tempo, 3),
-    }
-
-
+# ── Chamada ao modelo local (Ollama) ─────────────────────────────────
 def chamar_ollama(prompt: str, modelo: str) -> dict:
     import requests
     t0 = time.perf_counter()
@@ -158,7 +147,7 @@ Pergunta: {pergunta}
 Resposta:"""
 
 
-def responder(pipeline, pergunta: str, tipo: str, modelo: str) -> dict:
+def responder(pipeline, pergunta: str, modelo: str) -> dict:
     t0 = time.perf_counter()
     resultado = pipeline.run({"embedder": {"text": pergunta}})
     docs = resultado["retriever"]["documents"]
@@ -177,10 +166,7 @@ def responder(pipeline, pergunta: str, tipo: str, modelo: str) -> dict:
     contexto = "\n\n---\n\n".join([d.content for d in docs])
     prompt = PROMPT_TEMPLATE.format(contexto=contexto, pergunta=pergunta)
 
-    if tipo == "groq":
-        r = chamar_groq(prompt, modelo)
-    else:
-        r = chamar_ollama(prompt, modelo)
+    r = chamar_ollama(prompt, modelo)
 
     return {
         "resposta": r["texto"],
@@ -192,15 +178,59 @@ def responder(pipeline, pergunta: str, tipo: str, modelo: str) -> dict:
     }
 
 
+# ── Juiz RAGAS via Maritaca ──────────────────────────────────────────
+def montar_juiz_maritaca():
+    """
+    Monta o LLM-juiz do RAGAS usando a Maritaca AI (API compatível com
+    OpenAI). Levanta um erro claro se a chave não estiver configurada,
+    em vez de deixar o RAGAS falhar tentando usar a OpenAI por padrão.
+    """
+    if not MARITACA_API_KEY:
+        raise RuntimeError(
+            "MARITACA_API_KEY não configurada no .env. "
+            "Defina MARITACA_API_KEY, MARITACA_BASE_URL e MARITACA_MODEL "
+            "antes de rodar a avaliação com RAGAS."
+        )
+
+    from langchain_openai import ChatOpenAI
+    from ragas.llms import LangchainLLMWrapper
+
+    chat = ChatOpenAI(
+        model=MARITACA_MODEL,
+        api_key=MARITACA_API_KEY,
+        base_url=MARITACA_BASE_URL,
+        temperature=0.0,
+    )
+    return LangchainLLMWrapper(chat)
+
+
+def montar_embeddings_juiz():
+    """
+    Embeddings usados pelo RAGAS para métricas de similaridade semântica.
+    Usa o mesmo modelo de embeddings do pipeline de retrieval
+    (intfloat/multilingual-e5-base) via HuggingFace, evitando também
+    aqui a dependência da OpenAI.
+
+    NOTA METODOLÓGICA (mencionar no artigo, seção de limitações):
+    usar o mesmo modelo de embeddings do retrieval como "juiz" de
+    avaliação pode introduzir viés circular. Se o tempo permitir, vale
+    testar com um segundo modelo de embeddings independente (ex.:
+    nomic-embed-text, já disponível no Ollama do servidor) para
+    validar a robustez dos resultados.
+    """
+    from ragas.embeddings import HuggingfaceEmbeddings
+    return HuggingfaceEmbeddings(model_name=MODELO_EMB)
+
+
 # ── RAGAS ────────────────────────────────────────────────────────────
 def avaliar_com_ragas(perguntas, respostas, contextos, resp_esperadas) -> dict:
     """
     Calcula métricas RAGAS: faithfulness, answer_relevancy, context_precision,
-    context_recall, answer_correctness (comparando com resposta esperada).
+    context_recall, answer_correctness — usando a Maritaca como juiz.
 
-    Retorna um dict {metrica: [score_por_pergunta]}.
-    Se o pacote ragas não estiver instalado, cai no fallback de similaridade
-    lexical simples (Jaccard), avisando no console.
+    Se o pacote ragas ou langchain-openai não estiverem instalados, ou se
+    a MARITACA_API_KEY não estiver configurada, cai no fallback de
+    similaridade lexical (Jaccard), avisando claramente no console.
     """
     try:
         from datasets import Dataset
@@ -213,6 +243,9 @@ def avaliar_com_ragas(perguntas, respostas, contextos, resp_esperadas) -> dict:
             answer_correctness,
         )
 
+        juiz_llm = montar_juiz_maritaca()
+        juiz_embeddings = montar_embeddings_juiz()
+
         dataset = Dataset.from_dict({
             "question":       perguntas,
             "answer":         respostas,
@@ -220,9 +253,14 @@ def avaliar_com_ragas(perguntas, respostas, contextos, resp_esperadas) -> dict:
             "ground_truth":   resp_esperadas,
         })
 
+        print(f"   🧑‍⚖️  Juiz RAGAS: Maritaca ({MARITACA_MODEL})")
+        print(f"   🧑‍⚖️  Embeddings do juiz: {MODELO_EMB} (mesmo do retrieval — ver nota no código)")
+
         resultado = evaluate(
             dataset,
             metrics=[faithfulness, answer_relevancy, context_precision, context_recall, answer_correctness],
+            llm=juiz_llm,
+            embeddings=juiz_embeddings,
         )
 
         df = resultado.to_pandas()
@@ -234,9 +272,9 @@ def avaliar_com_ragas(perguntas, respostas, contextos, resp_esperadas) -> dict:
             "answer_correctness": df["answer_correctness"].tolist(),
         }
 
-    except ImportError:
-        print("\n⚠️  Pacote 'ragas' não instalado — usando fallback de similaridade lexical (Jaccard).")
-        print("   Para métricas RAGAS completas, rode: pip install ragas datasets\n")
+    except (ImportError, RuntimeError) as e:
+        print(f"\n⚠️  RAGAS com juiz Maritaca indisponível ({e}).")
+        print("   Usando fallback de similaridade lexical (Jaccard) apenas para answer_correctness.\n")
 
         def jaccard(a: str, b: str) -> float:
             sa, sb = set(a.lower().split()), set(b.lower().split())
@@ -258,15 +296,14 @@ def avaliar_com_ragas(perguntas, respostas, contextos, resp_esperadas) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", required=True, help="CSV ou XLSX com pergunta,resposta_esperada")
-    parser.add_argument("--branch",  required=True, help="Nome da branch/config (ex: main, exp/mistral)")
-    parser.add_argument("--tipo",    required=True, choices=["groq", "ollama"])
-    parser.add_argument("--modelo",  required=True, help="ID do modelo (ex: llama-3.3-70b-versatile, mistral)")
+    parser.add_argument("--branch",  required=True, help="Nome da branch/config (ex: llama3, mistral, gemma)")
+    parser.add_argument("--modelo",  required=True, help="ID do modelo Ollama (ex: llama3, mistral, gemma2:27b)")
     parser.add_argument("--limite",  type=int, default=None, help="Limitar número de perguntas (teste rápido)")
     parser.add_argument("--saida",   default="relatorio_ragas.csv")
     args = parser.parse_args()
 
     print(f"\n🌿 Branch/config: {args.branch}")
-    print(f"🤖 Modelo: {args.modelo} ({args.tipo})")
+    print(f"🤖 Modelo avaliado: {args.modelo} (ollama)")
 
     dados = carregar_dataset(args.dataset, args.limite)
     print(f"📋 {len(dados)} perguntas carregadas do Golden Dataset\n")
@@ -282,7 +319,7 @@ def main():
         print(f"  ⏳ [{i}/{len(dados)}] {pergunta[:55]}...")
 
         try:
-            r = responder(pipeline, pergunta, args.tipo, args.modelo)
+            r = responder(pipeline, pergunta, args.modelo)
         except Exception as e:
             print(f"     ❌ erro: {e}")
             r = {"resposta": "", "contexto": "", "tempo_retrieval_s": 0, "tempo_llm_s": 0,
@@ -296,7 +333,6 @@ def main():
         linhas_brutas.append({
             "branch": args.branch,
             "modelo": args.modelo,
-            "tipo": args.tipo,
             "pergunta": pergunta,
             "resposta_esperada": esperada,
             "resposta_gerada": r["resposta"][:300].replace("\n", " "),
@@ -306,7 +342,7 @@ def main():
             "tokens_saida": r["tokens_saida"],
         })
 
-        time.sleep(1)  # evitar rate limit
+        time.sleep(1)  # evitar sobrecarregar o Ollama local
 
     print("\n🧮 Calculando métricas RAGAS...")
     ragas_scores = avaliar_com_ragas(perguntas, respostas, contextos, resp_esperadas)
@@ -350,7 +386,6 @@ def main():
     linha_agg = {
         "branch": args.branch,
         "modelo": args.modelo,
-        "tipo": args.tipo,
         "n_perguntas": len(dados),
         "tempo_retrieval_medio_s": media("tempo_retrieval_s"),
         "tempo_llm_medio_s": media("tempo_llm_s"),
