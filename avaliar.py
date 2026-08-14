@@ -238,6 +238,7 @@ def avaliar_com_ragas(perguntas, respostas, contextos, resp_esperadas) -> dict:
     try:
         from datasets import Dataset
         from ragas import evaluate
+        from ragas.run_config import RunConfig
         from ragas.metrics import (
             faithfulness,
             answer_relevancy,
@@ -259,11 +260,23 @@ def avaliar_com_ragas(perguntas, respostas, contextos, resp_esperadas) -> dict:
         print(f"   🧑‍⚖️  Juiz RAGAS: Maritaca ({MARITACA_MODEL})")
         print(f"   🧑‍⚖️  Embeddings do juiz: {MODELO_EMB} (mesmo do retrieval — ver nota no código)")
 
+        # Timeout maior e menos chamadas em paralelo — a API da Maritaca
+        # é mais lenta que a OpenAI e derruba jobs por TimeoutError com
+        # a configuração padrão do RAGAS, principalmente na métrica
+        # answer_correctness (que faz mais chamadas por pergunta).
+        run_config = RunConfig(
+            timeout=180,       # segundos por chamada individual (padrão é 60s)
+            max_retries=3,     # tenta de novo antes de desistir do job
+            max_wait=60,       # espera máxima entre retries
+            max_workers=2,     # menos chamadas simultâneas para a API da Maritaca
+        )
+
         resultado = evaluate(
             dataset,
             metrics=[faithfulness, answer_relevancy, context_precision, context_recall, answer_correctness],
             llm=juiz_llm,
             embeddings=juiz_embeddings,
+            run_config=run_config,
         )
 
         df = resultado.to_pandas()
