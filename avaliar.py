@@ -218,8 +218,11 @@ def montar_embeddings_juiz():
     nomic-embed-text, já disponível no Ollama do servidor) para
     validar a robustez dos resultados.
     """
-    from ragas.embeddings import HuggingfaceEmbeddings
-    return HuggingfaceEmbeddings(model_name=MODELO_EMB)
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    from ragas.embeddings import LangchainEmbeddingsWrapper
+
+    hf_embeddings = HuggingFaceEmbeddings(model_name=MODELO_EMB)
+    return LangchainEmbeddingsWrapper(hf_embeddings)
 
 
 # ── RAGAS ────────────────────────────────────────────────────────────
