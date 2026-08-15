@@ -71,10 +71,30 @@ def carregar_ragas(caminho: str) -> pd.DataFrame:
 # ── Tabelas em Markdown ──────────────────────────────────────────────
 def tabela_desempenho(df_logs: pd.DataFrame, df_ragas: pd.DataFrame) -> str:
     """
-    Tabela de latência/throughput por modelo — prioriza os logs do app.py
-    (uso instrumentado), com fallback para o avaliar.py se não houver logs.
+    Tabela de latência/throughput por modelo — prioriza o relatorio_ragas.csv
+    (rodada oficial do avaliar.py com o Golden Dataset), já que é a fonte
+    controlada e completa (mesmo número de perguntas por modelo). Cai para
+    os logs do app.py apenas se a avaliação formal ainda não tiver sido
+    rodada — esses logs tendem a ser parciais/exploratórios (testes manuais
+    na interface) e não devem ser usados como dado principal do artigo.
     """
-    if not df_logs.empty:
+    if not df_ragas.empty:
+        g = df_ragas.groupby("modelo").agg(
+            n_consultas=("modelo", "count"),
+            tempo_retrieval_medio_s=("tempo_retrieval_s", "mean"),
+            tempo_llm_medio_s=("tempo_llm_s", "mean"),
+        ).round(3).reset_index().rename(columns={"modelo": "modelo_id"})
+
+        md = "| Modelo | N | Retrieval (s) | LLM (s) |\n"
+        md += "|---|---|---|---|\n"
+        for _, r in g.iterrows():
+            md += (
+                f"| {r['modelo_id']} | {int(r['n_consultas'])} | "
+                f"{r['tempo_retrieval_medio_s']} | {r['tempo_llm_medio_s']} |\n"
+            )
+        return md
+
+    elif not df_logs.empty:
         g = df_logs.groupby("modelo_id").agg(
             n_consultas=("modelo_id", "count"),
             tempo_total_medio_s=("tempo_total_s", "mean"),
@@ -84,26 +104,20 @@ def tabela_desempenho(df_logs: pd.DataFrame, df_ragas: pd.DataFrame) -> str:
             tokens_por_s_medio=("tokens_por_s", "mean"),
             taxa_nao_encontrado_pct=("nao_encontrado", lambda s: round(s.mean() * 100, 1)),
         ).round(3).reset_index()
-    elif not df_ragas.empty:
-        g = df_ragas.groupby("modelo").agg(
-            n_consultas=("modelo", "count"),
-            tempo_retrieval_medio_s=("tempo_retrieval_s", "mean"),
-            tempo_llm_medio_s=("tempo_llm_s", "mean"),
-        ).round(3).reset_index().rename(columns={"modelo": "modelo_id"})
-    else:
-        return "*(sem dados de desempenho — rode o app.py ou avaliar.py primeiro)*\n"
 
-    md = "| Modelo | N | Tempo total (s) | Retrieval (s) | LLM (s) | Tokens/s | % não encontrado |\n"
-    md += "|---|---|---|---|---|---|---|\n"
-    for _, r in g.iterrows():
-        md += (
-            f"| {r['modelo_id']} | {int(r['n_consultas'])} | "
-            f"{r.get('tempo_total_medio_s', '—')} | "
-            f"{r['tempo_retrieval_medio_s']} | {r['tempo_llm_medio_s']} | "
-            f"{r.get('tokens_por_s_medio', '—')} | "
-            f"{r.get('taxa_nao_encontrado_pct', '—')} |\n"
-        )
-    return md
+        md = "| Modelo | N | Tempo total (s) | Retrieval (s) | LLM (s) | Tokens/s | % não encontrado |\n"
+        md += "|---|---|---|---|---|---|---|\n"
+        for _, r in g.iterrows():
+            md += (
+                f"| {r['modelo_id']} | {int(r['n_consultas'])} | "
+                f"{r.get('tempo_total_medio_s', '—')} | "
+                f"{r['tempo_retrieval_medio_s']} | {r['tempo_llm_medio_s']} | "
+                f"{r.get('tokens_por_s_medio', '—')} | "
+                f"{r.get('taxa_nao_encontrado_pct', '—')} |\n"
+            )
+        return md
+
+    return "*(sem dados de desempenho — rode o app.py ou avaliar.py primeiro)*\n"
 
 
 def tabela_qualidade(df_ragas: pd.DataFrame) -> str:
@@ -128,10 +142,10 @@ def tabela_qualidade(df_ragas: pd.DataFrame) -> str:
 
 # ── Gráficos ─────────────────────────────────────────────────────────
 def grafico_latencia(df_logs: pd.DataFrame, df_ragas: pd.DataFrame):
-    if not df_logs.empty:
-        g = df_logs.groupby("modelo_id")[["tempo_retrieval_s", "tempo_llm_s"]].mean()
-    elif not df_ragas.empty:
+    if not df_ragas.empty:
         g = df_ragas.groupby("modelo")[["tempo_retrieval_s", "tempo_llm_s"]].mean()
+    elif not df_logs.empty:
+        g = df_logs.groupby("modelo_id")[["tempo_retrieval_s", "tempo_llm_s"]].mean()
     else:
         return
 
@@ -150,6 +164,7 @@ def grafico_latencia(df_logs: pd.DataFrame, df_ragas: pd.DataFrame):
 
 def grafico_throughput(df_logs: pd.DataFrame):
     if df_logs.empty or "tokens_por_s" not in df_logs.columns:
+        print("  (grafico_throughput.png pulado — precisa dos logs do app.py com tokens_por_s)")
         return
 
     g = df_logs.groupby("modelo_id")["tokens_por_s"].mean().sort_values()
@@ -220,12 +235,12 @@ def main():
     grafico_ragas(df_ragas)
 
     print("\n💾 Consolidando CSV único...")
-    if not df_logs.empty:
+    if not df_ragas.empty:
+        df_ragas.to_csv(OUT_DIR / "dados_consolidados.csv", index=False)
+        print(f"  ✅ dados_consolidados.csv ({len(df_ragas)} linhas, de avaliar.py — rodada oficial)")
+    elif not df_logs.empty:
         df_logs.to_csv(OUT_DIR / "dados_consolidados.csv", index=False)
         print(f"  ✅ dados_consolidados.csv ({len(df_logs)} linhas, de logs de uso real)")
-    elif not df_ragas.empty:
-        df_ragas.to_csv(OUT_DIR / "dados_consolidados.csv", index=False)
-        print(f"  ✅ dados_consolidados.csv ({len(df_ragas)} linhas, de avaliar.py)")
 
     print(f"\n{'='*55}")
     print(f"✅ Análise concluída! Resultados em: {OUT_DIR}/")
