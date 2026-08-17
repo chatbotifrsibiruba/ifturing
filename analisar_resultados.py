@@ -113,7 +113,7 @@ def tabela_desempenho(df_logs: pd.DataFrame, df_ragas: pd.DataFrame) -> str:
         g["tokens_por_s_medio"] = (g["tokens_saida_medio"] / g["tempo_llm_medio_s"]).round(2)
         g["modelo_nome"] = g["modelo"].apply(nome_bonito)
 
-        md = "| Modelo | N | Retrieval (s) | LLM (s) | Tokens/s |\n"
+        md = "| Modelo | N | Retrieval (s) | LLM (s) | Tokens/s (fim a fim) |\n"
         md += "|---|---|---|---|---|\n"
         for _, r in g.sort_values("modelo_nome").iterrows():
             md += (
@@ -219,9 +219,9 @@ def grafico_throughput(df_logs: pd.DataFrame, df_ragas: pd.DataFrame):
 
     fig, ax = plt.subplots(figsize=(9, 5))
     g.plot(kind="barh", ax=ax, color="#1B5E3F")
-    ax.set_xlabel("Tokens gerados por segundo")
+    ax.set_xlabel("Tokens gerados por segundo (fim a fim: prefill + geração)")
     ax.set_ylabel("Modelo")
-    ax.set_title("Throughput médio por modelo")
+    ax.set_title("Throughput médio por modelo (tempo total da chamada)")
     plt.tight_layout()
     plt.savefig(OUT_DIR / "grafico_throughput.png", dpi=150)
     plt.close()
