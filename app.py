@@ -39,10 +39,14 @@ MODELOS = {
         "tipo": "ollama", "modelo": "gemma2:27b",
         "descricao": "Local no servidor", "params_b": 27.2, "quantizacao": "Q4_0",
     },
+    "🖥️ Qwen3 0.6B (Ollama local)": {
+        "tipo": "ollama", "modelo": "qwen3:0.6b",
+        "descricao": "Local no servidor", "params_b": 0.6, "quantizacao": "Q4_0",
+    },
 }
 
 # Modelo padrão usado no modo simples (usuário final não escolhe)
-MODELO_PADRAO_SIMPLES = "🖥️ LLaMA 3 (Ollama local)"
+MODELO_PADRAO_SIMPLES = "🖥️ Qwen3 0.6B (Ollama local)"
 
 # ── Metadados do ambiente ────────────────────────────────────────────
 @st.cache_data
