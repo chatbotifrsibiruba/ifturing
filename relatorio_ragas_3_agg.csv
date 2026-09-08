@@ -1,0 +1,4 @@
+branch,modelo,n_perguntas,tempo_retrieval_medio_s,tempo_llm_medio_s,faithfulness_medio,answer_relevancy_medio,context_precision_medio,context_recall_medio,answer_correctness_medio
+llama3,llama3,100,0.0931,21.0065,0.5989,0.3728,0.68,0.5425,0.3278
+mistral,mistral,100,0.0946,26.233,0.7092,0.6174,0.68,0.52,0.3863
+gemma,gemma2:27b,100,0.0967,81.0054,0.8608,0.485,0.68,0.5225,0.4017
