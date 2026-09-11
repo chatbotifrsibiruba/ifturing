@@ -47,8 +47,10 @@ import csv
 import time
 import pickle
 import argparse
+from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
+from db import init_db, upsert_modelo, get_or_create_sessao, inserir_consulta
 
 load_dotenv()
 
@@ -334,6 +336,15 @@ def main():
     print(f"\n🌿 Branch/config: {args.branch}")
     print(f"🤖 Modelo avaliado: {args.modelo} (ollama)")
 
+    init_db()
+    upsert_modelo(modelo_id=args.modelo)
+    sessao_uid = f"avaliar_{args.branch}_{datetime.now().isoformat()}"
+    sessao_id = get_or_create_sessao(
+        sessao_uid=sessao_uid,
+        origem="avaliar",
+        branch=args.branch,
+    )
+
     dados = carregar_dataset(args.dataset, args.limite)
     print(f"📋 {len(dados)} perguntas carregadas do Golden Dataset\n")
 
@@ -382,6 +393,31 @@ def main():
         linha["context_precision"]  = ragas_scores["context_precision"][i]
         linha["context_recall"]     = ragas_scores["context_recall"][i]
         linha["answer_correctness"] = ragas_scores["answer_correctness"][i]
+
+    print("\n💾 Gravando resultados no banco...")
+    for i, linha in enumerate(linhas_brutas):
+        ragas_dict = {
+            "faithfulness":       linha.get("faithfulness"),
+            "answer_relevancy":   linha.get("answer_relevancy"),
+            "context_precision":  linha.get("context_precision"),
+            "context_recall":     linha.get("context_recall"),
+            "answer_correctness": linha.get("answer_correctness"),
+        }
+        try:
+            inserir_consulta(
+                sessao_id=sessao_id,
+                modelo_id=args.modelo,
+                pergunta=linha["pergunta"],
+                resposta_gerada=respostas[i],
+                resposta_esperada=linha["resposta_esperada"],
+                tempo_retrieval_s=linha["tempo_retrieval_s"],
+                tempo_llm_s=linha["tempo_llm_s"],
+                tokens_entrada=linha["tokens_entrada"],
+                tokens_saida=linha["tokens_saida"],
+                ragas=ragas_dict,
+            )
+        except Exception as e:
+            print(f"[db] erro ao gravar consulta {i + 1}: {e}")
 
     # ── Salva CSV bruto (append entre execuções de branches diferentes) ──
     saida = Path(args.saida)

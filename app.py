@@ -13,8 +13,10 @@ from haystack.components.embedders import SentenceTransformersTextEmbedder
 from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
 from haystack.document_stores.in_memory import InMemoryDocumentStore
 from dotenv import load_dotenv
+from db import init_db, upsert_modelo, get_or_create_sessao, inserir_consulta
 
 load_dotenv()
+init_db()
 
 # ── Configurações ────────────────────────────────────────────────────
 PASTA_FAISS   = os.getenv("PASTA_FAISS",   "./faiss_index")
@@ -47,6 +49,15 @@ MODELOS = {
 
 # Modelo padrão usado no modo simples (usuário final não escolhe)
 MODELO_PADRAO_SIMPLES = "🖥️ Qwen3 0.6B (Ollama local)"
+
+for _nome, _cfg in MODELOS.items():
+    upsert_modelo(
+        modelo_id=_cfg["modelo"],
+        nome_bonito=_nome,
+        tipo=_cfg.get("tipo", "ollama"),
+        params_b=_cfg.get("params_b"),
+        quantizacao=_cfg.get("quantizacao"),
+    )
 
 # ── Metadados do ambiente ────────────────────────────────────────────
 @st.cache_data
@@ -333,7 +344,7 @@ def responder(pergunta: str) -> dict:
         "erro": False,
     }
 
-def salvar_log(pergunta: str, m: dict):
+def salvar_log(pergunta: str, m: dict) -> int | None:
     entrada = {
         "timestamp": datetime.datetime.now().isoformat(),
         "sessao_id": st.session_state.sessao_id,
@@ -375,9 +386,42 @@ def salvar_log(pergunta: str, m: dict):
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(json.dumps(entrada, ensure_ascii=False) + "\n")
 
+    consulta_id = None
+    try:
+        consulta_id = inserir_consulta(
+            sessao_id=st.session_state.db_sessao_id,
+            modelo_id=cfg["modelo"],
+            pergunta=pergunta,
+            resposta_gerada=m["resposta"],
+            tempo_retrieval_s=m["tempo_retrieval_s"],
+            tempo_llm_s=m["tempo_llm_s"],
+            tempo_total_s=m["tempo_total_s"],
+            tokens_entrada=m["tokens_entrada"],
+            tokens_saida=m["tokens_saida"],
+            docs_recuperados=m["docs_recuperados"],
+            score_max=m["score_max"],
+            score_medio=m["score_medio"],
+            nao_encontrado=m["nao_encontrado"],
+            erro=m["erro"],
+        )
+    except Exception as e:
+        print(f"[db] erro ao gravar consulta: {e}")
+    return consulta_id
+
 # ── Estado da sessão ─────────────────────────────────────────────────
 if "sessao_id" not in st.session_state:
     st.session_state.sessao_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+if "db_sessao_id" not in st.session_state:
+    try:
+        st.session_state.db_sessao_id = get_or_create_sessao(
+            sessao_uid=st.session_state.sessao_id,
+            origem="app",
+            modo=st.session_state.modo,
+        )
+    except Exception as e:
+        print(f"[db] erro ao criar sessão: {e}")
+        st.session_state.db_sessao_id = None
 
 if "historico" not in st.session_state:
     st.session_state.historico = [{
@@ -436,7 +480,7 @@ if pergunta:
         with st.spinner(spinner_msg):
             try:
                 m = responder(pergunta)
-                salvar_log(pergunta, m)
+                consulta_id = salvar_log(pergunta, m)
             except Exception as e:
                 m = {
                     "resposta": f"❌ Erro ao processar: {e}",
@@ -446,7 +490,7 @@ if pergunta:
                     "tokens_total": 0, "tokens_por_s": 0.0, "chars_resposta": 0,
                     "ram_delta_mb": 0.0, "nao_encontrado": False, "erro": True,
                 }
-                salvar_log(pergunta, m)
+                consulta_id = salvar_log(pergunta, m)
 
         st.markdown(m["resposta"])
 
@@ -465,6 +509,7 @@ if pergunta:
         "role": "assistant",
         "content": m["resposta"],
         "metricas": linha_metricas,
+        "consulta_id": consulta_id,
     })
     if pergunta_sugerida:
         st.rerun()
