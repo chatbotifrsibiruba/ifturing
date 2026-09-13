@@ -13,7 +13,7 @@ from haystack.components.embedders import SentenceTransformersTextEmbedder
 from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
 from haystack.document_stores.in_memory import InMemoryDocumentStore
 from dotenv import load_dotenv
-from db import init_db, upsert_modelo, get_or_create_sessao, inserir_consulta
+from db import init_db, upsert_modelo, get_or_create_sessao, inserir_consulta, inserir_feedback
 
 load_dotenv()
 init_db()
@@ -442,6 +442,29 @@ for msg in st.session_state.historico:
         st.markdown(msg["content"])
         if not MODO_SIMPLES and "metricas" in msg:
             st.caption(msg["metricas"])
+        if msg["role"] == "assistant" and msg.get("consulta_id"):
+            col_util, col_nao_util, col_resto = st.columns([1, 1, 8])
+            chave_base = f"feedback_{msg['consulta_id']}"
+            if chave_base not in st.session_state:
+                with col_util:
+                    if st.button("👍", key=f"{chave_base}_up", help="Resposta útil"):
+                        try:
+                            inserir_feedback(msg["consulta_id"], util=True)
+                            st.session_state[chave_base] = "up"
+                            st.rerun()
+                        except Exception as e:
+                            print(f"Erro ao salvar feedback: {e}")
+                with col_nao_util:
+                    if st.button("👎", key=f"{chave_base}_down", help="Resposta não útil"):
+                        try:
+                            inserir_feedback(msg["consulta_id"], util=False)
+                            st.session_state[chave_base] = "down"
+                            st.rerun()
+                        except Exception as e:
+                            print(f"Erro ao salvar feedback: {e}")
+            else:
+                emoji = "👍" if st.session_state[chave_base] == "up" else "👎"
+                st.caption(f"{emoji} Obrigado pelo feedback!")
 
 # ── Sugestões rápidas (só no modo simples, só no início) ─────────────
 if MODO_SIMPLES and len(st.session_state.historico) == 1:
