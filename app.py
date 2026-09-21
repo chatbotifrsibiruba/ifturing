@@ -27,7 +27,6 @@ TOP_K         = 5
 LOG_PATH      = Path("./logs")
 LOG_PATH.mkdir(exist_ok=True)
 
-# Apenas modelos locais via Ollama — decisão documentada no README (seção "Por que apenas modelos locais")
 MODELOS = {
     "🖥️ LLaMA 3 (Ollama local)": {
         "tipo": "ollama", "modelo": MODELO_OLLAMA,
@@ -47,7 +46,6 @@ MODELOS = {
     },
 }
 
-# Modelo padrão usado no modo simples (usuário final não escolhe)
 MODELO_PADRAO_SIMPLES = "🖥️ Qwen3 0.6B (Ollama local)"
 
 for _nome, _cfg in MODELOS.items():
@@ -79,50 +77,356 @@ AMBIENTE = coletar_ambiente()
 st.set_page_config(
     page_title="IF Turing — IFRS Ibirubá",
     page_icon="🎓",
-    layout="centered",
+    layout="wide",
 )
 
-# ── Estado do modo (padrão: simples, amigável ao candidato) ──────────
+# ── Estado do modo ───────────────────────────────────────────────────
 if "modo" not in st.session_state:
     st.session_state.modo = "simples"
 
 MODO_SIMPLES = st.session_state.modo == "simples"
 
+# ── CSS Global (bloco único consolidado) ─────────────────────────────
 st.markdown("""
-    <style>
-        .block-container { max-width: 780px; padding-top: 1.5rem; }
-        .stChatMessage { border-radius: 12px; }
-        h1 { color: #1a5276; }
-        .modo-toggle-info {
-            font-size: 12.5px; color: #888; text-align: right;
-            margin-top: -6px;
-        }
-    </style>
+<style>
+/*
+ * IF TURING — CSS CONSOLIDADO
+ * Regra geral: tudo é claro por padrão (fundo branco/cinza, texto escuro).
+ * Exceções escuras: sidebar (#2B2B2B) e balão do usuário (#1A1A1A).
+ * Todas as regras usam !important para sobrepor o tema padrão do Streamlit.
+ * Ordem das regras: da mais geral para a mais específica, garantindo que
+ * regras mais específicas (balão do usuário) sobrescrevam as gerais.
+ */
+
+/* ── 0. Chrome do Streamlit ─────────────────────────────────────────── */
+#MainMenu, footer { display: none !important; }
+[data-testid="stToolbar"] { display: none !important; }
+
+/* NÃO esconder o header — o botão "»" de reabrir a sidebar vive nele.
+   Tornamos transparente/sem altura visual, mas overflow:visible preserva
+   o botão de toggle posicionado absolutamente dentro dele. */
+header[data-testid="stHeader"] {
+    background-color: transparent !important;
+    border-bottom: none !important;
+    height: 0 !important;
+    overflow: visible !important;
+}
+
+/* Botão de reabrir sidebar quando colapsada: nunca esconder */
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    z-index: 999999 !important;
+}
+
+/* ── 1. Base da página: fundo cinza claro, texto escuro ─────────────── */
+html, body {
+    background-color: #EDEDED !important;
+    color: #1A1A1A !important;
+}
+.stApp {
+    background-color: #EDEDED !important;
+    color: #1A1A1A !important;
+}
+section.main,
+section.main > div {
+    background-color: #EDEDED !important;
+    color: #1A1A1A !important;
+}
+
+/* ── 2. Card central (block-container): branco, texto escuro em tudo ── */
+.main .block-container {
+    background-color: #FFFFFF !important;
+    color: #1A1A1A !important;
+    border-radius: 16px !important;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.09) !important;
+    margin: 16px 20px 80px 20px !important;
+    padding: 0 !important;
+    max-width: calc(100% - 40px) !important;
+    overflow: hidden !important;
+}
+/* Força cor escura em todos os descendentes do card.
+   Regras mais específicas abaixo sobrescrevem esta para os casos excepcionais. */
+.main .block-container * {
+    color: #1A1A1A !important;
+}
+
+/* ── 3. Sidebar: fundo escuro, TODO texto branco ────────────────────── */
+[data-testid="stSidebar"],
+[data-testid="stSidebar"] > div {
+    background-color: #2B2B2B !important;
+    padding-top: 0 !important;
+}
+/* Seletor universal cobre p, span, label, a, h*, .stMarkdown, metric, etc. */
+[data-testid="stSidebar"] * {
+    color: #FFFFFF !important;
+}
+[data-testid="stSidebar"] hr {
+    border-color: #3A3A3A !important;
+}
+[data-testid="stSidebar"] .stSelectbox > div > div {
+    background-color: #3A3A3A !important;
+    border-color: #555555 !important;
+}
+[data-testid="stSidebar"] .stExpander {
+    background-color: #333333 !important;
+    border-color: #444444 !important;
+}
+[data-testid="stSidebar"] .stButton > button {
+    background-color: #3A3A3A !important;
+    border-color: #555555 !important;
+}
+
+/* ── 4. Botões na área principal: fundo branco, hover verde ─────────── */
+/* Cobre as variações de DOM do Streamlit (stButton container, kind attr) */
+div[data-testid="stButton"] button,
+div[data-testid="stButton"] button p,
+div[data-testid="stButton"] button span,
+button[kind="secondary"],
+button[kind="secondary"] p,
+button[kind="secondary"] span,
+.main .stButton button {
+    background-color: #FFFFFF !important;
+    color: #1A1A1A !important;
+    border: 1px solid #D5D5D5 !important;
+    border-radius: 8px !important;
+}
+div[data-testid="stButton"] button:hover,
+button[kind="secondary"]:hover,
+.main .stButton button:hover {
+    background-color: #F0FFF0 !important;
+    border-color: #00A300 !important;
+    color: #1A1A1A !important;
+}
+/* Botões DA SIDEBAR sobrescrevem as regras acima (seletor mais específico) */
+[data-testid="stSidebar"] div[data-testid="stButton"] button,
+[data-testid="stSidebar"] div[data-testid="stButton"] button p,
+[data-testid="stSidebar"] div[data-testid="stButton"] button span {
+    background-color: #3A3A3A !important;
+    color: #FFFFFF !important;
+    border-color: #555555 !important;
+}
+
+/* ── 5. Input do chat e barra sticky do rodapé ──────────────────────── */
+/* Todos os níveis do container fixo ao fundo */
+[data-testid="stBottom"],
+[data-testid="stBottom"] > div,
+[data-testid="stBottom"] > div > div {
+    background-color: #FFFFFF !important;
+    color: #1A1A1A !important;
+}
+[data-testid="stChatInput"] {
+    background-color: #FFFFFF !important;
+    border: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+    border-top: 1px solid #EBEBEB !important;
+    padding: 10px 16px !important;
+}
+[data-testid="stChatInput"] textarea {
+    background-color: #F0F0F0 !important;
+    color: #1A1A1A !important;
+    border: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+    border-radius: 24px !important;
+    padding: 10px 20px !important;
+}
+[data-testid="stChatInput"] textarea:focus {
+    border: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+}
+[data-testid="stChatInput"] button {
+    background-color: #00A300 !important;
+    color: #FFFFFF !important;
+    border: none !important;
+    outline: none !important;
+    border-radius: 50% !important;
+}
+[data-testid="stBottom"],
+[data-testid="stBottom"] > div,
+[data-testid="stBottom"] > div > div {
+    border: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+/* ── 6. Balões do chat ──────────────────────────────────────────────── */
+[data-testid="stChatMessage"] {
+    background-color: transparent !important;
+    padding: 6px 0 !important;
+}
+
+/* Bot: esquerda, cinza claro, texto escuro */
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) .stChatMessageContent {
+    background-color: #E8E8E8 !important;
+    border-radius: 4px 16px 16px 16px !important;
+    padding: 12px 16px !important;
+}
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) .stChatMessageContent * {
+    color: #1A1A1A !important;
+}
+
+/* Usuário: direita, escuro — ÚNICA exceção de fundo escuro fora da sidebar.
+   Este seletor é mais específico que ".main .block-container *",
+   portanto vence na cascata mesmo ambos tendo !important. */
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
+    flex-direction: row-reverse !important;
+}
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) .stChatMessageContent {
+    background-color: #1A1A1A !important;
+    border-radius: 16px 4px 16px 16px !important;
+    padding: 12px 16px !important;
+}
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) .stChatMessageContent * {
+    color: #FFFFFF !important;
+}
+
+/* ── 7. Classes personalizadas IF Turing ────────────────────────────── */
+.if-topbar {
+    background-color: #FFFFFF !important;
+    border-bottom: 1px solid #EBEBEB !important;
+    padding: 14px 24px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+}
+.if-topbar-left {
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px !important;
+    font-weight: 700 !important;
+    font-size: 15px !important;
+    color: #1A1A1A !important;
+}
+.if-topbar-status {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    background-color: #F0F0F0 !important;
+    border-radius: 20px !important;
+    padding: 6px 14px !important;
+    font-size: 13px !important;
+    color: #555555 !important;
+}
+.if-dot {
+    width: 8px !important;
+    height: 8px !important;
+    background-color: #00A300 !important;
+    border-radius: 50% !important;
+    display: inline-block !important;
+    flex-shrink: 0 !important;
+}
+.if-card-header {
+    background-color: #FFFFFF !important;
+    border-bottom: 1px solid #F0F0F0 !important;
+    padding: 14px 20px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+}
+.if-card-header-left {
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px !important;
+}
+.if-card-title  { font-weight: 700 !important; font-size: 15px !important; color: #1A1A1A !important; }
+.if-card-subtitle { font-size: 11px !important; color: #888888 !important; margin-top: 2px !important; }
+.if-card-online {
+    display: flex !important;
+    align-items: center !important;
+    gap: 5px !important;
+    font-size: 13px !important;
+    color: #555555 !important;
+}
+
+/* ── 8. Força bruta: garante tema claro em toda a área da aplicação ─── */
+/* Estas regras ficam no FINAL para vencer qualquer regra anterior,
+   incluindo as injetadas pelo tema padrão do Streamlit. */
+:root {
+    color-scheme: light !important;
+}
+
+body,
+.stApp,
+[data-testid="stAppViewContainer"],
+[data-testid="stAppViewContainer"] * {
+    color: #1A1A1A !important;
+}
+
+/* Sidebar: sobrescreve a regra genérica acima */
+[data-testid="stSidebar"],
+[data-testid="stSidebar"] * {
+    color: #FFFFFF !important;
+}
+
+/* Balão do usuário: sobrescreve a regra genérica acima */
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) .stChatMessageContent,
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) .stChatMessageContent * {
+    color: #FFFFFF !important;
+}
+
+/* Botão de envio do chat: ícone branco no fundo verde */
+[data-testid="stChatInput"] button,
+[data-testid="stChatInput"] button * {
+    color: #FFFFFF !important;
+    background-color: #00A300 !important;
+}
+</style>
 """, unsafe_allow_html=True)
 
-# ── Cabeçalho com toggle de modo ─────────────────────────────────────
-col_titulo, col_toggle = st.columns([3.2, 1.3])
-with col_titulo:
-    st.title("🎓 IF Turing")
-    st.caption("Assistente do Processo Seletivo — IFRS Campus Ibirubá")
-with col_toggle:
-    st.write("")  # alinhamento vertical
-    rotulo_botao = "🔬 Ver modo análise" if MODO_SIMPLES else "🎓 Ver modo usuário"
-    if st.button(rotulo_botao, use_container_width=True):
-        st.session_state.modo = "detalhado" if MODO_SIMPLES else "simples"
-        st.rerun()
-    st.markdown(
-        f'<p class="modo-toggle-info">Modo atual: '
-        f'{"👤 Usuário final" if MODO_SIMPLES else "🔬 Análise detalhada"}</p>',
-        unsafe_allow_html=True
-    )
+# ── Sidebar ──────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("""
+<div style="padding:24px 20px 8px;">
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
+<div style="width:42px;height:42px;background:#FFF;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0;">🎓</div>
+<div>
+<div style="font-weight:700;font-size:17px;color:#FFF;line-height:1.2;">IF Turing</div>
+<div style="font-size:12px;color:#A0A0A0;">IFRS Ibirubá</div>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:7px;margin-bottom:24px;">
+<div style="width:8px;height:8px;background:#00A300;border-radius:50%;flex-shrink:0;"></div>
+<span style="color:#A0A0A0;font-size:13px;">Bot online</span>
+</div>
+<div style="font-size:10px;color:#A0A0A0;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:8px;">Painel</div>
+<div style="background:#00A300;border-radius:10px;padding:11px 16px;margin-bottom:24px;display:flex;align-items:center;gap:10px;">
+<span style="font-size:17px;">💬</span>
+<span style="color:#FFF;font-weight:700;font-size:15px;">Conversas</span>
+</div>
+<div style="border-top:1px solid #3A3A3A;margin-top:8px;"></div>
+</div>
+""", unsafe_allow_html=True)
 
-# ── Sidebar — só aparece no modo detalhado ────────────────────────────
-if MODO_SIMPLES:
-    modelo_selecionado = MODELO_PADRAO_SIMPLES
-    cfg = MODELOS[modelo_selecionado]
-else:
-    with st.sidebar:
+    st.markdown("""
+<div style="padding:14px 20px 0;">
+<div style="font-size:10px;color:#A0A0A0;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:12px;">Atalhos</div>
+<div style="display:flex;flex-direction:column;gap:14px;margin-bottom:20px;">
+<a href="https://ifrs.edu.br/ibiruba/" target="_blank" style="color:#FFF;text-decoration:none;font-size:14px;">Site IFRS Ibirubá</a>
+<a href="#" style="color:#FFF;text-decoration:none;font-size:14px;">Vem pro IF Ibirubá</a>
+<a href="#" style="color:#FFF;text-decoration:none;font-size:14px;">Cronograma do processo seletivo</a>
+</div>
+</div>
+""", unsafe_allow_html=True)
+
+    if MODO_SIMPLES:
+        modelo_selecionado = MODELO_PADRAO_SIMPLES
+        cfg = MODELOS[modelo_selecionado]
+        if st.button("🗑️ Limpar conversa", use_container_width=True):
+            st.session_state.historico = [{
+                "role": "assistant",
+                "content": (
+                    "Olá! 👋 Sou o **IF Turing**, assistente do processo seletivo do "
+                    "IFRS Campus Ibirubá. Pode me perguntar sobre cursos, documentos, "
+                    "datas, cotas, inscrições e muito mais!"
+                ),
+            }]
+            st.rerun()
+    else:
         st.markdown("## ⚙️ Configuração")
         st.markdown("---")
         modelo_selecionado = st.selectbox(
@@ -232,6 +536,17 @@ else:
             }]
             st.rerun()
 
+    # Toggle de modo + rodapé
+    rotulo_botao = "🔬 Ver modo análise" if MODO_SIMPLES else "🎓 Ver modo usuário"
+    if st.button(rotulo_botao, use_container_width=True):
+        st.session_state.modo = "detalhado" if MODO_SIMPLES else "simples"
+        st.rerun()
+    st.markdown("""
+<div style="text-align:center;color:#555;font-size:11px;padding:10px 0 16px;border-top:1px solid #3A3A3A;margin-top:8px;">
+Assistente virtual
+</div>
+""", unsafe_allow_html=True)
+
 # ── Carrega índice ───────────────────────────────────────────────────
 @st.cache_resource(show_spinner="Carregando base de conhecimento...")
 def carregar_pipeline():
@@ -249,6 +564,21 @@ def carregar_pipeline():
     return pipeline, len(documentos)
 
 pipeline, n_chunks = carregar_pipeline()
+
+# ── Topbar da área de chat ───────────────────────────────────────────
+st.markdown("""
+<div class="if-topbar">
+    <div class="if-topbar-left">
+        <span style="font-size:20px;cursor:pointer;color:#555;">☰</span>
+        <span style="font-size:17px;">💬</span>
+        <span>Conversas</span>
+    </div>
+    <div class="if-topbar-status">
+        <span class="if-dot"></span>
+        <span>Bot online</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 if pipeline is None:
     st.error("⚠️ Índice não encontrado. Execute `python indexar.py` para indexar os PDFs primeiro.", icon="🚨")
@@ -436,6 +766,26 @@ if "historico" not in st.session_state:
 if "logs" not in st.session_state:
     st.session_state.logs = []
 
+# ── Cabeçalho do card de chat ────────────────────────────────────────
+n_msgs = len(st.session_state.historico)
+st.markdown(f"""
+<div class="if-card-header">
+    <div class="if-card-header-left">
+        <span style="font-size:24px;">🎓</span>
+        <div>
+            <div class="if-card-title">IF Turing</div>
+            <div class="if-card-subtitle">
+                Assistente do Processo Seletivo &middot; {n_msgs} msgs
+            </div>
+        </div>
+    </div>
+    <div class="if-card-online">
+        <span class="if-dot"></span>
+        <span>online</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
 # ── Renderiza histórico ──────────────────────────────────────────────
 for msg in st.session_state.historico:
     with st.chat_message(msg["role"], avatar="🎓" if msg["role"] == "assistant" else "🧑‍🎓"):
@@ -536,3 +886,4 @@ if pergunta:
     })
     if pergunta_sugerida:
         st.rerun()
+
