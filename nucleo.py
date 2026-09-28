@@ -23,7 +23,7 @@ PASTA_FAISS   = os.getenv("PASTA_FAISS",   "./faiss_index")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",    "http://localhost:11434")
 MODELO_OLLAMA = os.getenv("MODELO_OLLAMA", "llama3:latest")
 MODELO_EMB    = "intfloat/multilingual-e5-base"
-TOP_K         = 8
+TOP_K         = 10
 
 MODELOS = {
     "🖥️ LLaMA 3 (Ollama local)": {
@@ -116,6 +116,8 @@ Regras obrigatórias:
 - Responda diretamente, em português, sem introduções nem rótulos como "Resposta:", "Inferência:" ou similares.
 - Nunca comente sobre como a resposta foi construída, deduzida ou inferida.
 - Ao listar cursos, use exatamente os nomes, turnos e dados que aparecem no contexto — não invente nem complete informações ausentes.
+- Cada linha do contexto é um registro independente: use APENAS os dados que aparecem juntos na MESMA linha. Nunca combine o nome de um curso com turno, duração ou vagas de uma linha diferente.
+- Se o contexto trouxer cursos de categorias diferentes (técnico integrado, técnico subsequente, superior), responda apenas com os cursos que pertencem à categoria perguntada, sem misturar categorias.
 - Se a informação não estiver no contexto, responda apenas: "Não encontrei essa informação nos documentos."
 
 Contexto:

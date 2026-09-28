@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-_LABELS = ("Curso", "Turnos", "Duração", "Total de Vagas")
+_LABELS = ("Curso", "Turnos", "Duração (semestres)", "Total de Vagas")
 
 
 def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
