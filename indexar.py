@@ -30,14 +30,27 @@ def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
 
     Usa posição fixa das 4 primeiras colunas (Curso, Turnos, Duração,
     Total de Vagas). Colunas 4+ (cotas C1-C10) são sempre descartadas.
-    Funciona para tabelas de Cursos Técnicos e Cursos Superiores.
+    Só inclui tabelas de páginas que mencionam "Ibirubá" (campus alvo).
     """
     linhas: list[str] = []
+    n_mantidas = 0
+    n_descartadas = 0
     try:
         with pdfplumber.open(caminho_pdf) as pdf:
             for i, page in enumerate(pdf.pages):
                 try:
                     tabelas = page.extract_tables()
+                    if not tabelas:
+                        continue
+
+                    texto_pagina = (page.extract_text() or "").lower()
+                    eh_ibiruba = "ibirubá" in texto_pagina or "ibiruba" in texto_pagina
+
+                    if not eh_ibiruba:
+                        n_descartadas += len(tabelas)
+                        continue
+
+                    n_mantidas += len(tabelas)
                     for tabela in tabelas:
                         if not tabela:
                             continue
@@ -59,6 +72,10 @@ def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
                     print(f"⚠️  Aviso: erro ao processar página {i + 1} de {caminho_pdf}: {e}")
     except Exception as e:
         print(f"⚠️  Aviso: erro ao abrir {caminho_pdf} com pdfplumber: {e}")
+
+    nome = Path(caminho_pdf).name
+    print(f"   📋 {nome}: {n_mantidas} tabela(s) Ibirubá mantida(s), "
+          f"{n_descartadas} de outros campi descartada(s)")
     return linhas
 
 

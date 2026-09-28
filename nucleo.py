@@ -85,11 +85,12 @@ _MSG_OLLAMA_OFFLINE = (
 
 
 def chamar_ollama(prompt: str, modelo: str) -> dict:
+    print(f"[ollama] prompt size: {len(prompt)} chars")
     try:
         r = requests.post(
             f"{OLLAMA_URL}/api/generate",
             json={"model": modelo, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.3, "num_predict": 1024}},
+                  "options": {"temperature": 0.3, "num_predict": 1024, "num_ctx": 4096}},
             timeout=300,
         )
         r.raise_for_status()
@@ -97,9 +98,12 @@ def chamar_ollama(prompt: str, modelo: str) -> dict:
             requests.exceptions.RequestException) as _exc:
         raise _OllamaOffline() from _exc
     d = r.json()
+    texto = d.get("response", "")
+    if not texto.strip():
+        texto = "O modelo não conseguiu gerar uma resposta, tente novamente ou reformule a pergunta."
     ns = 1_000_000_000
     return {
-        "texto": d.get("response", ""),
+        "texto": texto,
         "tokens_entrada": d.get("prompt_eval_count", 0),
         "tokens_saida": d.get("eval_count", 0),
         "tokens_total": d.get("prompt_eval_count", 0) + d.get("eval_count", 0),
