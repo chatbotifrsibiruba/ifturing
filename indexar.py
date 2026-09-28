@@ -6,6 +6,7 @@ Execute este script UMA VEZ (ou toda vez que atualizar os PDFs):
 """
 
 import os
+import re
 import pickle
 from pathlib import Path
 import pdfplumber
@@ -120,10 +121,18 @@ def indexar_documentos(
 
     embedder.warm_up()
 
-    # Documentos de texto normal: limpar + split
-    cleaned_text  = cleaner.run(documents=text_docs)
-    split_text    = splitter.run(documents=cleaned_text["documents"])
-    chunks_texto  = split_text["documents"]
+    # Documentos de texto normal: limpar + split + filtra chunks de cotas
+    _PADRAO_COTA = re.compile(r"C\d{1,2}:")
+    cleaned_text     = cleaner.run(documents=text_docs)
+    split_text       = splitter.run(documents=cleaned_text["documents"])
+    chunks_texto_raw = split_text["documents"]
+    chunks_texto = [
+        c for c in chunks_texto_raw
+        if len(_PADRAO_COTA.findall(c.content or "")) < 4
+    ]
+    n_descartados = len(chunks_texto_raw) - len(chunks_texto)
+    if n_descartados:
+        print(f"   🗑️  {n_descartados} chunk(s) de texto descartado(s) (parágrafos de cotas)")
 
     # Documentos de tabela: apenas limpar, cada linha já é um chunk final
     cleaned_table = cleaner.run(documents=table_docs)

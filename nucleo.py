@@ -23,7 +23,7 @@ PASTA_FAISS   = os.getenv("PASTA_FAISS",   "./faiss_index")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",    "http://localhost:11434")
 MODELO_OLLAMA = os.getenv("MODELO_OLLAMA", "llama3:latest")
 MODELO_EMB    = "intfloat/multilingual-e5-base"
-TOP_K         = 5
+TOP_K         = 8
 
 MODELOS = {
     "🖥️ LLaMA 3 (Ollama local)": {
