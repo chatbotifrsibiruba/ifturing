@@ -110,17 +110,18 @@ def chamar_ollama(prompt: str, modelo: str) -> dict:
 
 
 def perguntar_llm(pergunta: str, contexto: str, modelo_cfg: dict) -> dict:
-    prompt = f"""Você é um assistente especializado nos documentos relacionados ao processo seletivo do IFRS.
-Sua função é guiar as pessoas interessadas em entrar na instituição de forma inclusiva e acessível.
-Responda à pergunta abaixo usando APENAS o contexto fornecido.
-Se a resposta puder ser deduzida com base nas informações disponíveis, responda deixando claro que é uma inferência.
-Se a resposta não estiver no contexto, diga "Não encontrei essa informação nos documentos."
+    prompt = f"""Você é um assistente especializado nos documentos do processo seletivo do IFRS.
+Responda à pergunta usando SOMENTE as informações do contexto abaixo.
+Regras obrigatórias:
+- Responda diretamente, em português, sem introduções nem rótulos como "Resposta:", "Inferência:" ou similares.
+- Nunca comente sobre como a resposta foi construída, deduzida ou inferida.
+- Ao listar cursos, use exatamente os nomes, turnos e dados que aparecem no contexto — não invente nem complete informações ausentes.
+- Se a informação não estiver no contexto, responda apenas: "Não encontrei essa informação nos documentos."
 
 Contexto:
 {contexto}
 
-Pergunta: {pergunta}
-Resposta:"""
+Pergunta: {pergunta}"""
     return chamar_ollama(prompt, modelo_cfg["modelo"])
 
 

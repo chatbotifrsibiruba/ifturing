@@ -100,9 +100,6 @@ def indexar_documentos(
                 meta={"source": arq.name, "tipo": "tabela"},
             ))
 
-    # Combina texto normal + linhas de tabela e passa pelo pipeline de limpeza/split/embed
-    todos_docs = text_docs + table_docs
-
     document_store = InMemoryDocumentStore()
 
     cleaner  = DocumentCleaner()
@@ -118,9 +115,17 @@ def indexar_documentos(
 
     embedder.warm_up()
 
-    cleaned  = cleaner.run(documents=todos_docs)
-    split    = splitter.run(documents=cleaned["documents"])
-    embedded = embedder.run(documents=split["documents"])
+    # Documentos de texto normal: limpar + split
+    cleaned_text  = cleaner.run(documents=text_docs)
+    split_text    = splitter.run(documents=cleaned_text["documents"])
+    chunks_texto  = split_text["documents"]
+
+    # Documentos de tabela: apenas limpar, cada linha já é um chunk final
+    cleaned_table = cleaner.run(documents=table_docs)
+    chunks_tabela = cleaned_table["documents"]
+
+    todos_chunks = chunks_texto + chunks_tabela
+    embedded = embedder.run(documents=todos_chunks)
     writer.run(documents=embedded["documents"])
 
     all_documents = document_store.filter_documents()
@@ -130,8 +135,11 @@ def indexar_documentos(
     with open(store_path, "wb") as f:
         pickle.dump(all_documents, f)
 
+    n_chunks_texto  = len(chunks_texto)
+    n_chunks_tabela = len(chunks_tabela)
     print(f"\n✅ Indexação concluída! {n_chunks} chunks salvos em {store_path}")
-    print(f"📊 {n_linhas_tabela} linhas de tabela extraídas de {len(arquivos)} PDFs")
+    print(f"   • Chunks de texto normal : {n_chunks_texto}")
+    print(f"   • Chunks de tabela       : {n_chunks_tabela} ({n_linhas_tabela} linhas extraídas)")
 
     return {"n_arquivos": len(arquivos), "n_chunks": n_chunks, "n_linhas_tabela": n_linhas_tabela}
 
