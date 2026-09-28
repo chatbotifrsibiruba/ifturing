@@ -24,29 +24,44 @@ load_dotenv()
 
 _LABELS = ("Curso", "Turnos", "Duração (semestres)", "Total de Vagas")
 
+# Cabeçalho de seção Ibirubá: "Campus Ibirubá:" (cota) ou "Campus Ibirubá (" (resumo)
+_RE_CAMPUS_IBIRUBA = re.compile(r"campus\s+ibirub[aá]\s*[:(]", re.IGNORECASE)
+# Cabeçalho de qualquer outro campus — mesma dualidade de separador
+_RE_CAMPUS_OUTRO   = re.compile(r"campus\s+\w+(?:\s+\w+)*\s*[:(]", re.IGNORECASE)
+
 
 def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
     """Extrai linhas de tabela de um PDF como texto estruturado.
 
     Usa posição fixa das 4 primeiras colunas (Curso, Turnos, Duração,
     Total de Vagas). Colunas 4+ (cotas C1-C10) são sempre descartadas.
-    Só inclui tabelas de páginas que mencionam "Ibirubá" (campus alvo).
+
+    Filtro de campus: só inclui tabelas de páginas dentro da seção do
+    Campus Ibirubá. Ativa ao encontrar 'Campus Ibirubá:' e desativa ao
+    encontrar o cabeçalho de qualquer outro campus. Continuações de tabela
+    em páginas sem cabeçalho explícito são mantidas enquanto o estado estiver
+    ativo.
     """
     linhas: list[str] = []
     n_mantidas = 0
     n_descartadas = 0
+    ibiruba_ativo = False
     try:
         with pdfplumber.open(caminho_pdf) as pdf:
             for i, page in enumerate(pdf.pages):
                 try:
+                    texto = page.extract_text() or ""
+
+                    if _RE_CAMPUS_IBIRUBA.search(texto):
+                        ibiruba_ativo = True
+                    elif _RE_CAMPUS_OUTRO.search(texto):
+                        ibiruba_ativo = False
+
                     tabelas = page.extract_tables()
                     if not tabelas:
                         continue
 
-                    texto_pagina = (page.extract_text() or "").lower()
-                    eh_ibiruba = "ibirubá" in texto_pagina or "ibiruba" in texto_pagina
-
-                    if not eh_ibiruba:
+                    if not ibiruba_ativo:
                         n_descartadas += len(tabelas)
                         continue
 
@@ -54,10 +69,37 @@ def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
                     for tabela in tabelas:
                         if not tabela:
                             continue
+                        ultimo_col0 = ""  # resetado a cada tabela
                         for linha in tabela[1:]:  # tabela[0] é sempre o cabeçalho
-                            # Pula sub-cabeçalhos multi-nível: col 0 None ou vazia
-                            if not linha or not linha[0] or not str(linha[0]).strip():
+                            if not linha:
                                 continue
+
+                            col0_raw = " ".join(str(linha[0]).replace("\n", " ").split()) if linha[0] else ""
+
+                            # Verifica se há dados nas colunas 1-3 (Turnos, Duração, Vagas)
+                            tem_dados = any(
+                                linha[idx] and str(linha[idx]).strip()
+                                for idx in range(1, min(4, len(linha)))
+                            )
+
+                            if col0_raw:
+                                # Col 0 preenchida: atualiza referência e usa diretamente
+                                ultimo_col0 = col0_raw
+                                col0 = col0_raw
+                            elif tem_dados:
+                                # Col 0 vazia mas há dados → célula mesclada, herda último curso
+                                col0 = ultimo_col0
+                            else:
+                                # Col 0 vazia e sem dados → sub-cabeçalho ou linha vazia, descarta
+                                continue
+
+                            if not col0:
+                                continue
+
+                            # Pula rodapés: começa com "Observação" ou texto corrido (>15 palavras)
+                            if col0.lower().startswith("observa") or len(col0.split()) > 15:
+                                continue
+
                             partes = []
                             for idx, label in enumerate(_LABELS):
                                 if idx >= len(linha):
@@ -66,6 +108,9 @@ def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
                                 val_s = " ".join(str(val).replace("\n", " ").split()) if val else ""
                                 if val_s:
                                     partes.append(f"{label}: {val_s}")
+                                elif idx == 0:
+                                    # Garante que o nome do curso (herdado) sempre aparece
+                                    partes.append(f"{label}: {col0}")
                             if partes:
                                 linhas.append(" | ".join(partes))
                 except Exception as e:

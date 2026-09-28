@@ -1,29 +1,26 @@
 """
-debug_linhas.py — Inspeciona linhas geradas por extrair_tabelas_como_texto().
+debug_linhas.py — Mostra TODAS as linhas geradas por extrair_tabelas_como_texto().
 """
 import sys
 from pathlib import Path
 from indexar import extrair_tabelas_como_texto
 
-PDF = Path("./documentos/EDITAL Nº XX-2026 - EDITAL DE INGRESSO DE ESTUDANTES NO PRIMEIRO SEMESTRE DE 2027 (1).pdf")
+PDFS = sorted(Path("./documentos").glob("*.pdf"))
 
-if not PDF.exists():
-    print(f"ERRO: {PDF} não encontrado.")
+if not PDFS:
+    print("ERRO: nenhum PDF em ./documentos")
     sys.exit(1)
 
-linhas = extrair_tabelas_como_texto(str(PDF))
-print(f"Total de linhas extraídas: {len(linhas)}\n")
+total_geral = 0
+for pdf in PDFS:
+    print(f"\n{'='*70}")
+    print(f"PDF: {pdf.name}")
+    print('='*70)
+    linhas = extrair_tabelas_como_texto(str(pdf))
+    print(f"Total de linhas extraídas: {len(linhas)}")
+    for i, linha in enumerate(linhas, 1):
+        print(f"  {i:3}. {linha}")
+    total_geral += len(linhas)
 
-TERMOS = ("Ciência da Computação", "Matemática", "Agropecuária", "Eletrotécnica")
-
-print(f"=== Linhas que contêm: {TERMOS} ===")
-encontrados = {t: [] for t in TERMOS}
-for linha in linhas:
-    for t in TERMOS:
-        if t in linha:
-            encontrados[t].append(linha)
-
-for termo, matches in encontrados.items():
-    print(f"\n--- {termo} ({len(matches)} ocorrência(s)) ---")
-    for m in matches:
-        print(f"  {m}")
+print(f"\n{'='*70}")
+print(f"TOTAL GERAL: {total_geral} linhas extraídas de {len(PDFS)} PDF(s)")
