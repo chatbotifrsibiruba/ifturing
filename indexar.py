@@ -21,6 +21,34 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _limpar_nome_coluna(col_raw: str) -> str:
+    """Normaliza nome de coluna, corrigindo texto vertical garbled pelo pdfplumber.
+
+    Texto de coluna vertical no PDF chega com \n entre cada letra ou sílaba.
+    Distingue texto garbled de texto multiline normal pelo tamanho médio dos
+    segmentos entre \n (ignorando espaços): garbled ≤ 4 chars em média.
+
+    Dois mapeamentos conhecidos nos editais do IFRS:
+    - "Duração Semestres" garbled → contém 'ç' E 'ã'
+    - "Total de Vagas"   garbled → contém o conjunto {v,a,g,s,t,o,l}
+    """
+    if "\n" not in col_raw:
+        return col_raw.strip()
+
+    segments = col_raw.split("\n")
+    avg_nao_espaco = sum(len(s.replace(" ", "")) for s in segments) / len(segments)
+    limpo = " ".join(col_raw.replace("\n", " ").split())
+
+    if avg_nao_espaco <= 4:
+        sem_espaco = limpo.replace(" ", "").lower()
+        if "ç" in sem_espaco and "ã" in sem_espaco:
+            return "Duração (semestres)"
+        if {"v", "a", "g", "s", "t", "o", "l"}.issubset(set(sem_espaco)):
+            return "Total de Vagas"
+
+    return limpo
+
+
 def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
     linhas: list[str] = []
     try:
@@ -31,22 +59,36 @@ def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
                     for tabela in tabelas:
                         if not tabela:
                             continue
-                        cabecalho = tabela[0]
-                        cols_validas = [c for c in cabecalho if c and str(c).strip()]
+
+                        # Limpa nomes de coluna (remove \n, corrige garbled conhecidos)
+                        cabecalho = [
+                            _limpar_nome_coluna(str(c)) if c else ""
+                            for c in tabela[0]
+                        ]
+                        cols_validas = [c for c in cabecalho if c]
                         usar_cabecalho = len(cols_validas) >= 2
 
                         for linha in tabela[1:]:
+                            # Pula sub-cabeçalhos multi-nível: col 0 None ou vazia
+                            primeiro = linha[0] if linha else None
+                            if not primeiro or not str(primeiro).strip():
+                                continue
+
                             if usar_cabecalho:
                                 partes = []
                                 for col, val in zip(cabecalho, linha):
-                                    col_s = str(col).strip() if col else ""
-                                    val_s = str(val).strip() if val else ""
+                                    col_s = col
+                                    val_s = " ".join(str(val).replace("\n", " ").split()) if val else ""
                                     if col_s and val_s:
                                         partes.append(f"{col_s}: {val_s}")
                                 if partes:
                                     linhas.append(" | ".join(partes))
                             else:
-                                partes = [str(v).strip() for v in linha if v and str(v).strip()]
+                                partes = [
+                                    " ".join(str(v).replace("\n", " ").split())
+                                    for v in linha
+                                    if v and str(v).strip()
+                                ]
                                 if partes:
                                     linhas.append(" | ".join(partes))
                 except Exception as e:
