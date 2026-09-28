@@ -1,7 +1,5 @@
 """
-debug_linhas.py — Verifica linhas geradas por extrair_tabelas_como_texto().
-Mostra as primeiras 20 linhas totais e as primeiras 10 linhas de curso
-(que contenham "Técnico", "Graduação" ou "Superior").
+debug_linhas.py — Inspeciona linhas geradas por extrair_tabelas_como_texto().
 """
 import sys
 from pathlib import Path
@@ -16,11 +14,16 @@ if not PDF.exists():
 linhas = extrair_tabelas_como_texto(str(PDF))
 print(f"Total de linhas extraídas: {len(linhas)}\n")
 
-print("=== Primeiras 20 linhas (qualquer tipo) ===")
-for i, linha in enumerate(linhas[:20], 1):
-    print(f"[{i:02d}] {linha}")
+TERMOS = ("Ciência da Computação", "Matemática", "Agropecuária", "Eletrotécnica")
 
-print("\n=== Primeiras 10 linhas de curso (contêm 'Técnico', 'Graduação' ou 'Superior') ===")
-cursos = [l for l in linhas if any(k in l for k in ("Técnico", "Graduação", "Superior"))]
-for i, linha in enumerate(cursos[:10], 1):
-    print(f"[C{i:02d}] {linha}")
+print(f"=== Linhas que contêm: {TERMOS} ===")
+encontrados = {t: [] for t in TERMOS}
+for linha in linhas:
+    for t in TERMOS:
+        if t in linha:
+            encontrados[t].append(linha)
+
+for termo, matches in encontrados.items():
+    print(f"\n--- {termo} ({len(matches)} ocorrência(s)) ---")
+    for m in matches:
+        print(f"  {m}")
