@@ -3,7 +3,7 @@ import datetime
 import streamlit as st
 from dotenv import load_dotenv
 from db import init_db, get_or_create_sessao, inserir_feedback
-from nucleo import MODELOS, registrar_modelos, carregar_pipeline, responder, salvar_consulta_no_banco, formatar_metricas
+from nucleo import MODELOS, listar_modelos_ollama, registrar_modelos, carregar_pipeline, responder, salvar_consulta_no_banco, formatar_metricas
 
 load_dotenv()
 init_db()
@@ -32,12 +32,13 @@ st.caption("Modo análise: todas as métricas visíveis. Use para avaliar modelo
 with st.sidebar:
     st.markdown("## ⚙️ Configuração")
     st.markdown("---")
+    _modelos_disponiveis = listar_modelos_ollama()
     modelo_selecionado = st.selectbox(
         "Modelo de IA",
-        options=list(MODELOS.keys()),
+        options=list(_modelos_disponiveis.keys()),
         help="Troque o modelo para comparar respostas",
     )
-    cfg = MODELOS[modelo_selecionado]
+    cfg = _modelos_disponiveis[modelo_selecionado]
     st.markdown(f"**Tipo:** `{cfg['tipo']}`")
     st.markdown(f"**Modelo:** `{cfg['modelo']}`")
     st.markdown(f"**Parâmetros:** ~{cfg['params_b']}B")
