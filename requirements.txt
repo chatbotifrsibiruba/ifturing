@@ -1,8 +1,9 @@
 streamlit>=1.35.0
-haystack-ai>=2.3.0
+haystack-ai>=3.0.0
+chroma-haystack>=3.0.0
+sentence-transformers-haystack>=3.0.0
 sentence-transformers>=3.0.0
 python-dotenv>=1.0.0
 pypdf>=4.0.0
 pdfplumber>=0.11.0
-faiss-cpu>=1.8.0
 requests>=2.31.0

@@ -8,3 +8,5 @@ venv/
 .venv/
 /logs
 ifturing.db
+chroma_data/b79a372d-964a-4b64-9e85-efebbdaaaeca/link_lists.bin
+/chroma_data

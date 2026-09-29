@@ -10,7 +10,6 @@ Uso:
 """
 import sys
 import time
-import pickle
 import argparse
 from pathlib import Path
 from dotenv import load_dotenv
@@ -18,15 +17,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from nucleo import (
-    PASTA_FAISS, MODELO_EMB, TOP_K,
+    PASTA_CHROMA, MODELO_EMB, TOP_K,
     MODELOS, MODELO_PADRAO_SIMPLES,
     perguntar_llm,
     _OllamaOffline, _MSG_OLLAMA_OFFLINE,
 )
 from haystack import Pipeline
-from haystack.components.embedders import SentenceTransformersTextEmbedder
-from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
-from haystack.document_stores.in_memory import InMemoryDocumentStore
+from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersTextEmbedder
+from haystack_integrations.document_stores.chroma import ChromaDocumentStore
+from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
 
 PERGUNTAS = [
     "Quais são os cursos técnicos disponíveis no campus Ibirubá?",
@@ -36,28 +35,26 @@ PERGUNTAS = [
 
 
 def carregar_pipeline():
-    store_path = Path(PASTA_FAISS) / "store.pkl"
-    if not store_path.exists():
-        print(f"ERRO: índice não encontrado em {store_path}")
+    chroma_path = Path(PASTA_CHROMA)
+    if not chroma_path.exists():
+        print(f"ERRO: índice Chroma não encontrado em {chroma_path}")
         print("Execute  python indexar.py  primeiro.")
         sys.exit(1)
 
-    print(f"[setup] Carregando índice de {store_path} ...", end=" ", flush=True)
+    print(f"[setup] Abrindo ChromaDocumentStore em {chroma_path} ...", end=" ", flush=True)
     t0 = time.perf_counter()
-    with open(store_path, "rb") as f:
-        documentos = pickle.load(f)
-    t_pickle = time.perf_counter() - t0
-    print(f"OK — {len(documentos)} chunks em {t_pickle:.3f}s")
+    document_store = ChromaDocumentStore(collection_name="ifturing", persist_path=str(chroma_path))
+    n_chunks = document_store.count_documents()
+    t_chroma = time.perf_counter() - t0
+    print(f"OK — {n_chunks} chunks em {t_chroma:.3f}s")
 
-    print("[setup] Construindo InMemoryDocumentStore + pipeline ...", end=" ", flush=True)
+    print("[setup] Construindo pipeline ...", end=" ", flush=True)
     t0 = time.perf_counter()
-    document_store = InMemoryDocumentStore()
-    document_store.write_documents(documentos)
     pipeline = Pipeline()
     pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model=MODELO_EMB))
     pipeline.add_component(
         "retriever",
-        InMemoryEmbeddingRetriever(document_store=document_store, top_k=TOP_K),
+        ChromaEmbeddingRetriever(document_store=document_store, top_k=TOP_K),
     )
     pipeline.connect("embedder.embedding", "retriever.query_embedding")
     t_pipeline = time.perf_counter() - t0

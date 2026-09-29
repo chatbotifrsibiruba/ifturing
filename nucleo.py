@@ -5,21 +5,20 @@ Sem layout ou CSS do Streamlit.
 """
 import os
 import time
-import pickle
 import psutil
 import requests
 import streamlit as st
 from pathlib import Path
 from haystack import Pipeline
-from haystack.components.embedders import SentenceTransformersTextEmbedder
-from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
-from haystack.document_stores.in_memory import InMemoryDocumentStore
+from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersTextEmbedder
+from haystack_integrations.document_stores.chroma import ChromaDocumentStore
+from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
 from dotenv import load_dotenv
 from db import upsert_modelo, inserir_consulta
 
 load_dotenv()
 
-PASTA_FAISS   = os.getenv("PASTA_FAISS",   "./faiss_index")
+PASTA_CHROMA  = os.getenv("PASTA_CHROMA",  "./chroma_data")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",    "http://localhost:11434")
 MODELO_OLLAMA = os.getenv("MODELO_OLLAMA", "llama3:latest")
 MODELO_EMB    = "intfloat/multilingual-e5-base"
@@ -92,18 +91,18 @@ def registrar_modelos() -> None:
 
 @st.cache_resource(show_spinner="Carregando base de conhecimento...")
 def carregar_pipeline():
-    store_path = Path(PASTA_FAISS) / "store.pkl"
-    if not store_path.exists():
+    chroma_path = Path(PASTA_CHROMA)
+    if not chroma_path.exists():
         return None, 0
-    with open(store_path, "rb") as f:
-        documentos = pickle.load(f)
-    document_store = InMemoryDocumentStore()
-    document_store.write_documents(documentos)
+    document_store = ChromaDocumentStore(collection_name="ifturing", persist_path=str(chroma_path))
+    n_chunks = document_store.count_documents()
+    if n_chunks == 0:
+        return None, 0
     pipeline = Pipeline()
     pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model=MODELO_EMB))
-    pipeline.add_component("retriever", InMemoryEmbeddingRetriever(document_store=document_store, top_k=TOP_K))
+    pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=document_store, top_k=TOP_K))
     pipeline.connect("embedder.embedding", "retriever.query_embedding")
-    return pipeline, len(documentos)
+    return pipeline, n_chunks
 
 
 class _OllamaOffline(Exception):

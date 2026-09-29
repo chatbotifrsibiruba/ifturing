@@ -7,7 +7,6 @@ Uso:
 """
 import os
 import sys
-import pickle
 import time
 import argparse
 from pathlib import Path
@@ -18,41 +17,38 @@ load_dotenv()
 # Importa constantes e funções puras de nucleo (sem o carregar_pipeline decorado com
 # @st.cache_resource, que só funciona dentro de uma sessão Streamlit)
 from nucleo import (
-    PASTA_FAISS, MODELO_EMB, TOP_K,
+    PASTA_CHROMA, MODELO_EMB, TOP_K,
     MODELOS, MODELO_PADRAO_SIMPLES,
     perguntar_llm,
     _OllamaOffline, _MSG_OLLAMA_OFFLINE,
 )
 
 from haystack import Pipeline
-from haystack.components.embedders import SentenceTransformersTextEmbedder
-from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
-from haystack.document_stores.in_memory import InMemoryDocumentStore
+from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersTextEmbedder
+from haystack_integrations.document_stores.chroma import ChromaDocumentStore
+from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
 
 
 def _carregar_pipeline():
-    store_path = Path(PASTA_FAISS) / "store.pkl"
-    if not store_path.exists():
-        print(f"ERRO: índice não encontrado em {store_path}")
+    chroma_path = Path(PASTA_CHROMA)
+    if not chroma_path.exists():
+        print(f"ERRO: índice Chroma não encontrado em {chroma_path}")
         print("Execute  python indexar.py  primeiro.")
         sys.exit(1)
 
     print("Carregando índice...", end=" ", flush=True)
-    with open(store_path, "rb") as f:
-        documentos = pickle.load(f)
-
-    document_store = InMemoryDocumentStore()
-    document_store.write_documents(documentos)
+    document_store = ChromaDocumentStore(collection_name="ifturing", persist_path=str(chroma_path))
+    n_chunks = document_store.count_documents()
 
     pipeline = Pipeline()
     pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model=MODELO_EMB))
     pipeline.add_component(
         "retriever",
-        InMemoryEmbeddingRetriever(document_store=document_store, top_k=TOP_K),
+        ChromaEmbeddingRetriever(document_store=document_store, top_k=TOP_K),
     )
     pipeline.connect("embedder.embedding", "retriever.query_embedding")
 
-    print(f"OK ({len(documentos)} chunks)")
+    print(f"OK ({n_chunks} chunks)")
     return pipeline
 
 
