@@ -7,16 +7,16 @@ Execute este script UMA VEZ (ou toda vez que atualizar os PDFs):
 
 import os
 import re
-import pickle
+import shutil
 from pathlib import Path
 import pdfplumber
 from haystack.components.converters import PyPDFToDocument
 from haystack.components.preprocessors import DocumentSplitter, DocumentCleaner
-from haystack.components.embedders import SentenceTransformersDocumentEmbedder
+from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersDocumentEmbedder
 from haystack.components.writers import DocumentWriter
-from haystack.document_stores.in_memory import InMemoryDocumentStore
 from haystack.document_stores.types import DuplicatePolicy
 from haystack.dataclasses import Document
+from haystack_integrations.document_stores.chroma import ChromaDocumentStore
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -126,17 +126,23 @@ def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
 
 def indexar_documentos(
     pasta_docs: str = "./documentos",
-    pasta_faiss: str = "./faiss_index",
+    pasta_chroma: str = "./chroma_data",
 ) -> dict:
     """
-    Processa todos os PDFs de pasta_docs e gera o índice em pasta_faiss.
+    Processa todos os PDFs de pasta_docs e persiste o índice em pasta_chroma
+    via ChromaDocumentStore (embedded, sem servidor).
     Retorna {"n_arquivos": int, "n_chunks": int, "n_linhas_tabela": int}.
     Levanta exceção se não houver PDFs ou se algo falhar.
     """
-    pasta_docs  = str(pasta_docs)
-    pasta_faiss = str(pasta_faiss)
+    pasta_docs   = str(pasta_docs)
+    pasta_chroma = str(pasta_chroma)
 
-    os.makedirs(pasta_faiss, exist_ok=True)
+    # Remove índice anterior para garantir reindexação limpa
+    chroma_path = Path(pasta_chroma)
+    if chroma_path.exists():
+        shutil.rmtree(chroma_path)
+        print(f"   🗑️  Índice anterior em {pasta_chroma} removido")
+    chroma_path.mkdir(parents=True, exist_ok=True)
 
     arquivos = list(Path(pasta_docs).glob("*.pdf"))
 
@@ -168,7 +174,7 @@ def indexar_documentos(
                 meta={"source": arq.name, "tipo": "tabela"},
             ))
 
-    document_store = InMemoryDocumentStore()
+    document_store = ChromaDocumentStore(collection_name="ifturing", persist_path=pasta_chroma)
 
     cleaner  = DocumentCleaner()
     splitter = DocumentSplitter(
@@ -200,20 +206,19 @@ def indexar_documentos(
     cleaned_table = cleaner.run(documents=table_docs)
     chunks_tabela = cleaned_table["documents"]
 
+    # Chroma não suporta listas/dicts em metadata — serializa _split_overlap para string
     todos_chunks = chunks_texto + chunks_tabela
+    for doc in todos_chunks:
+        if "_split_overlap" in (doc.meta or {}):
+            doc.meta["_split_overlap"] = str(doc.meta["_split_overlap"])
     embedded = embedder.run(documents=todos_chunks)
     writer.run(documents=embedded["documents"])
 
-    all_documents = document_store.filter_documents()
-    n_chunks = len(all_documents)
-
-    store_path = Path(pasta_faiss) / "store.pkl"
-    with open(store_path, "wb") as f:
-        pickle.dump(all_documents, f)
+    n_chunks = document_store.count_documents()
 
     n_chunks_texto  = len(chunks_texto)
     n_chunks_tabela = len(chunks_tabela)
-    print(f"\n✅ Indexação concluída! {n_chunks} chunks salvos em {store_path}")
+    print(f"\n✅ Indexação concluída! {n_chunks} chunks persistidos em {pasta_chroma}/")
     print(f"   • Chunks de texto normal : {n_chunks_texto}")
     print(f"   • Chunks de tabela       : {n_chunks_tabela} ({n_linhas_tabela} linhas extraídas)")
 
@@ -221,7 +226,7 @@ def indexar_documentos(
 
 
 if __name__ == "__main__":
-    _pasta_docs  = os.getenv("PASTA_DOCS",  "./documentos")
-    _pasta_faiss = os.getenv("PASTA_FAISS", "./faiss_index")
-    resultado = indexar_documentos(_pasta_docs, _pasta_faiss)
+    _pasta_docs   = os.getenv("PASTA_DOCS",   "./documentos")
+    _pasta_chroma = os.getenv("PASTA_CHROMA", "./chroma_data")
+    resultado = indexar_documentos(_pasta_docs, _pasta_chroma)
     print(f"   Agora execute: streamlit run main.py")

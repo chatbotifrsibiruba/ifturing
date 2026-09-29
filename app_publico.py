@@ -8,7 +8,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from db import init_db, get_or_create_sessao, inserir_feedback
 from nucleo import (
-    MODELOS, MODELO_PADRAO_SIMPLES, MODELO_EMB, TOP_K,
+    MODELO_PADRAO_SIMPLES, MODELO_EMB, TOP_K,
+    listar_modelos_ollama,
     registrar_modelos, carregar_pipeline,
     responder, salvar_consulta_no_banco, formatar_metricas,
 )
@@ -391,8 +392,9 @@ with st.sidebar:
 """, unsafe_allow_html=True)
 
     if MODO_SIMPLES:
+        _modelos = listar_modelos_ollama()
         modelo_selecionado = MODELO_PADRAO_SIMPLES
-        cfg = MODELOS[modelo_selecionado]
+        cfg = _modelos.get(MODELO_PADRAO_SIMPLES) or next(iter(_modelos.values()))
         if st.button("🗑️ Limpar conversa", use_container_width=True):
             st.session_state.historico = [{
                 "role": "assistant",
@@ -406,12 +408,13 @@ with st.sidebar:
     else:
         st.markdown("## ⚙️ Configuração")
         st.markdown("---")
+        _modelos = listar_modelos_ollama()
         modelo_selecionado = st.selectbox(
             "Modelo de IA",
-            options=list(MODELOS.keys()),
+            options=list(_modelos.keys()),
             help="Troque o modelo para comparar respostas no artigo"
         )
-        cfg = MODELOS[modelo_selecionado]
+        cfg = _modelos[modelo_selecionado]
         st.markdown(f"**Tipo:** `{cfg['tipo']}`")
         st.markdown(f"**Modelo:** `{cfg['modelo']}`")
         st.markdown(f"**Parâmetros:** ~{cfg['params_b']}B")

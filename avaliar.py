@@ -45,7 +45,6 @@ Gera:
 import os
 import csv
 import time
-import pickle
 import argparse
 from datetime import datetime
 from pathlib import Path
@@ -55,7 +54,7 @@ from db import init_db, upsert_modelo, get_or_create_sessao, inserir_consulta
 load_dotenv()
 
 OLLAMA_URL         = os.getenv("OLLAMA_URL", "http://localhost:11434")
-PASTA_FAISS        = os.getenv("PASTA_FAISS", "./faiss_index")
+PASTA_CHROMA       = os.getenv("PASTA_CHROMA", "./chroma_data")
 MODELO_EMB         = "intfloat/multilingual-e5-base"
 
 MARITACA_API_KEY   = os.getenv("MARITACA_API_KEY", "")
@@ -94,20 +93,14 @@ def carregar_dataset(caminho: str, limite: int = None) -> list:
 # ── Pipeline de retrieval ────────────────────────────────────────────
 def carregar_pipeline():
     from haystack import Pipeline
-    from haystack.components.embedders import SentenceTransformersTextEmbedder
-    from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
-    from haystack.document_stores.in_memory import InMemoryDocumentStore
+    from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersTextEmbedder
+    from haystack_integrations.document_stores.chroma import ChromaDocumentStore
+    from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
 
-    store_path = Path(PASTA_FAISS) / "store.pkl"
-    with open(store_path, "rb") as f:
-        documentos = pickle.load(f)
-
-    document_store = InMemoryDocumentStore()
-    document_store.write_documents(documentos)
-
+    document_store = ChromaDocumentStore(collection_name="ifturing", persist_path=PASTA_CHROMA)
     pipeline = Pipeline()
     pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model=MODELO_EMB))
-    pipeline.add_component("retriever", InMemoryEmbeddingRetriever(document_store=document_store, top_k=5))
+    pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=document_store, top_k=5))
     pipeline.connect("embedder.embedding", "retriever.query_embedding")
 
     return pipeline

@@ -241,9 +241,9 @@ st.markdown("""
     "utils/__init__.py": '',
     
     "utils/rag_engine.py": '''from haystack import Pipeline
-from haystack.components.embedders import SentenceTransformersTextEmbedder
-from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
-from haystack.document_stores.in_memory import InMemoryDocumentStore
+from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersTextEmbedder
+from haystack_integrations.document_stores.chroma import ChromaDocumentStore
+from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
 import requests
 import os
 
@@ -251,15 +251,14 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 MODELO_OLLAMA = os.getenv("MODELO_OLLAMA", "llama3:latest")
 
 class RAGEngine:
-    def __init__(self, documentos):
-        self.document_store = InMemoryDocumentStore()
-        self.document_store.write_documents(documentos)
+    def __init__(self, pasta_chroma="./chroma_data"):
+        self.document_store = ChromaDocumentStore(collection_name="ifturing", persist_path=pasta_chroma)
 
         self.pipeline = Pipeline()
         self.pipeline.add_component('embedder', SentenceTransformersTextEmbedder(
             model='intfloat/multilingual-e5-base'
         ))
-        self.pipeline.add_component('retriever', InMemoryEmbeddingRetriever(
+        self.pipeline.add_component('retriever', ChromaEmbeddingRetriever(
             document_store=self.document_store,
             top_k=5
         ))
@@ -298,16 +297,17 @@ Resposta:"""
     "utils/document_processor.py": '''from haystack import Pipeline
 from haystack.components.converters import PyPDFToDocument
 from haystack.components.preprocessors import DocumentSplitter, DocumentCleaner
-from haystack.components.embedders import SentenceTransformersDocumentEmbedder
+from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersDocumentEmbedder
 from haystack.components.writers import DocumentWriter
-from haystack.document_stores.in_memory import InMemoryDocumentStore
+from haystack.document_stores.types import DuplicatePolicy
+from haystack_integrations.document_stores.chroma import ChromaDocumentStore
 
-def processar_documentos(pdf_paths):
+def processar_documentos(pdf_paths, pasta_chroma="./chroma_data"):
     if not pdf_paths:
-        return []
-    
-    document_store = InMemoryDocumentStore()
-    
+        return 0
+
+    document_store = ChromaDocumentStore(collection_name="ifturing", persist_path=pasta_chroma)
+
     pipeline = Pipeline()
     pipeline.add_component('converter', PyPDFToDocument())
     pipeline.add_component('cleaner', DocumentCleaner())
@@ -319,26 +319,26 @@ def processar_documentos(pdf_paths):
     pipeline.add_component('embedder', SentenceTransformersDocumentEmbedder(
         model='intfloat/multilingual-e5-base'
     ))
-    pipeline.add_component('writer', DocumentWriter(document_store=document_store))
-    
+    pipeline.add_component('writer', DocumentWriter(document_store=document_store, policy=DuplicatePolicy.OVERWRITE))
+
     pipeline.connect('converter', 'cleaner')
     pipeline.connect('cleaner', 'splitter')
     pipeline.connect('splitter', 'embedder')
     pipeline.connect('embedder', 'writer')
-    
+
     pipeline.run({'converter': {'sources': pdf_paths}})
-    
-    return document_store.filter_documents()
+
+    return document_store.count_documents()
 ''',
     
-    "requirements.txt": '''streamlit>=1.28.0
-haystack-ai>=2.0.0
-sentence-transformers>=2.2.0
-faiss-cpu>=1.7.4
+    "requirements.txt": '''streamlit>=1.35.0
+haystack-ai>=3.0.0
+chroma-haystack>=3.0.0
+sentence-transformers-haystack>=3.0.0
+sentence-transformers>=3.0.0
 requests>=2.31.0
-pypdf>=3.0.0
+pypdf>=4.0.0
 pydantic>=2.0.0
-torch>=2.0.0
 numpy>=1.24.0
 ''',
     

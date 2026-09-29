@@ -5,21 +5,20 @@ Sem layout ou CSS do Streamlit.
 """
 import os
 import time
-import pickle
 import psutil
 import requests
 import streamlit as st
 from pathlib import Path
 from haystack import Pipeline
-from haystack.components.embedders import SentenceTransformersTextEmbedder
-from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
-from haystack.document_stores.in_memory import InMemoryDocumentStore
+from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersTextEmbedder
+from haystack_integrations.document_stores.chroma import ChromaDocumentStore
+from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
 from dotenv import load_dotenv
 from db import upsert_modelo, inserir_consulta
 
 load_dotenv()
 
-PASTA_FAISS   = os.getenv("PASTA_FAISS",   "./faiss_index")
+PASTA_CHROMA  = os.getenv("PASTA_CHROMA",  "./chroma_data")
 OLLAMA_URL    = os.getenv("OLLAMA_URL",    "http://localhost:11434")
 MODELO_OLLAMA = os.getenv("MODELO_OLLAMA", "llama3:latest")
 MODELO_EMB    = "intfloat/multilingual-e5-base"
@@ -47,6 +46,38 @@ MODELOS = {
 MODELO_PADRAO_SIMPLES = "🖥️ Qwen3 0.6B (Ollama local)"
 
 
+@st.cache_data(ttl=60)
+def listar_modelos_ollama() -> dict:
+    """Consulta GET /api/tags no Ollama e retorna dict no mesmo formato de MODELOS.
+    Fallback para MODELOS fixo se o Ollama estiver inacessível."""
+    try:
+        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+        r.raise_for_status()
+        itens = r.json().get("models", [])
+        if not itens:
+            return MODELOS
+        resultado = {}
+        for m in itens:
+            nome = m["name"]
+            details = m.get("details", {})
+            params_str = details.get("parameter_size", "0B")
+            try:
+                params_b = float(params_str.upper().rstrip("B"))
+            except (ValueError, AttributeError):
+                params_b = 0.0
+            quant = details.get("quantization_level", "?")
+            resultado[f"🖥️ {nome} (Ollama local)"] = {
+                "tipo": "ollama",
+                "modelo": nome,
+                "descricao": "Local no servidor",
+                "params_b": params_b,
+                "quantizacao": quant,
+            }
+        return resultado
+    except Exception:
+        return MODELOS
+
+
 def registrar_modelos() -> None:
     for nome, cfg in MODELOS.items():
         upsert_modelo(
@@ -60,18 +91,18 @@ def registrar_modelos() -> None:
 
 @st.cache_resource(show_spinner="Carregando base de conhecimento...")
 def carregar_pipeline():
-    store_path = Path(PASTA_FAISS) / "store.pkl"
-    if not store_path.exists():
+    chroma_path = Path(PASTA_CHROMA)
+    if not chroma_path.exists():
         return None, 0
-    with open(store_path, "rb") as f:
-        documentos = pickle.load(f)
-    document_store = InMemoryDocumentStore()
-    document_store.write_documents(documentos)
+    document_store = ChromaDocumentStore(collection_name="ifturing", persist_path=str(chroma_path))
+    n_chunks = document_store.count_documents()
+    if n_chunks == 0:
+        return None, 0
     pipeline = Pipeline()
     pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model=MODELO_EMB))
-    pipeline.add_component("retriever", InMemoryEmbeddingRetriever(document_store=document_store, top_k=TOP_K))
+    pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=document_store, top_k=TOP_K))
     pipeline.connect("embedder.embedding", "retriever.query_embedding")
-    return pipeline, len(documentos)
+    return pipeline, n_chunks
 
 
 class _OllamaOffline(Exception):
@@ -85,7 +116,8 @@ _MSG_OLLAMA_OFFLINE = (
 
 
 def chamar_ollama(prompt: str, modelo: str) -> dict:
-    print(f"[ollama] prompt size: {len(prompt)} chars")
+    print(f"[timing] ollama_prompt_chars: {len(prompt)}")
+    t_http_inicio = time.perf_counter()
     try:
         r = requests.post(
             f"{OLLAMA_URL}/api/generate",
@@ -97,23 +129,41 @@ def chamar_ollama(prompt: str, modelo: str) -> dict:
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
             requests.exceptions.RequestException) as _exc:
         raise _OllamaOffline() from _exc
+    t_http = time.perf_counter() - t_http_inicio
+
     d = r.json()
     texto = d.get("response", "")
     if not texto.strip():
         texto = "O modelo não conseguiu gerar uma resposta, tente novamente ou reformule a pergunta."
+
     ns = 1_000_000_000
+    t_load    = d.get("load_duration", 0) / ns
+    t_prefill = d.get("prompt_eval_duration", 0) / ns
+    t_gen     = d.get("eval_duration", 0) / ns
+    tok_entrada = d.get("prompt_eval_count", 0)
+    tok_saida   = d.get("eval_count", 0)
+
+    print(f"[timing] ollama_http_total:   {t_http:.3f}s")
+    print(f"[timing]   └─ load_model:     {t_load:.3f}s")
+    print(f"[timing]   └─ prefill:        {t_prefill:.3f}s  ({tok_entrada} tokens)")
+    print(f"[timing]   └─ geração:        {t_gen:.3f}s  ({tok_saida} tokens)")
+    print(f"[timing] ollama_resposta_chars: {len(texto)}")
+    if tok_saida > 0 and t_gen > 0:
+        print(f"[timing] ollama_throughput:   {tok_saida / t_gen:.1f} tok/s")
+
     return {
         "texto": texto,
-        "tokens_entrada": d.get("prompt_eval_count", 0),
-        "tokens_saida": d.get("eval_count", 0),
-        "tokens_total": d.get("prompt_eval_count", 0) + d.get("eval_count", 0),
-        "tempo_carga_s": round(d.get("load_duration", 0) / ns, 3),
-        "tempo_prefill_s": round(d.get("prompt_eval_duration", 0) / ns, 3),
-        "tempo_geracao_s": round(d.get("eval_duration", 0) / ns, 3),
+        "tokens_entrada": tok_entrada,
+        "tokens_saida": tok_saida,
+        "tokens_total": tok_entrada + tok_saida,
+        "tempo_carga_s": round(t_load, 3),
+        "tempo_prefill_s": round(t_prefill, 3),
+        "tempo_geracao_s": round(t_gen, 3),
     }
 
 
 def perguntar_llm(pergunta: str, contexto: str, modelo_cfg: dict) -> dict:
+    t0 = time.perf_counter()
     prompt = f"""Você é um assistente especializado nos documentos do processo seletivo do IFRS.
 Responda à pergunta usando SOMENTE as informações do contexto abaixo.
 Regras obrigatórias:
@@ -128,6 +178,7 @@ Contexto:
 {contexto}
 
 Pergunta: {pergunta}"""
+    print(f"[timing] montagem_prompt:     {time.perf_counter() - t0:.6f}s  ({len(prompt)} chars total)")
     return chamar_ollama(prompt, modelo_cfg["modelo"])
 
 
@@ -140,15 +191,21 @@ def responder(pergunta: str, modelo_cfg: dict) -> dict:
     ram_antes = proc.memory_info().rss / 1024**2
     t_inicio = time.perf_counter()
 
+    print(f"\n[timing] ═══ início | modelo={modelo_cfg['modelo']} | pergunta={len(pergunta)} chars ═══")
+
+    # 1. Embedding da query + busca vetorial no InMemoryDocumentStore
     t0 = time.perf_counter()
     resultado = pipeline.run({"embedder": {"text": pergunta}})
     docs = resultado["retriever"]["documents"]
     t_retrieval = time.perf_counter() - t0
+    print(f"[timing] embed+retrieve:      {t_retrieval:.3f}s  ({len(docs)} docs recuperados)")
 
     if not docs:
+        t_total = time.perf_counter() - t_inicio
+        print(f"[timing] TOTAL (sem docs):    {t_total:.3f}s")
         return {
             "resposta": "⚠️ Nenhum trecho relevante encontrado nos documentos.",
-            "tempo_total_s": round(time.perf_counter() - t_inicio, 3),
+            "tempo_total_s": round(t_total, 3),
             "tempo_retrieval_s": round(t_retrieval, 3), "tempo_llm_s": 0.0,
             "docs_recuperados": 0, "score_max": 0.0, "score_medio": 0.0,
             "chars_contexto": 0, "tokens_entrada": 0, "tokens_saida": 0,
@@ -157,17 +214,26 @@ def responder(pergunta: str, modelo_cfg: dict) -> dict:
             "tempo_carga_s": 0.0, "tempo_prefill_s": 0.0, "tempo_geracao_s": 0.0,
         }
 
+    # 2. Montagem do contexto (join dos documentos recuperados)
+    t0 = time.perf_counter()
     scores = [d.score for d in docs if d.score is not None]
     contexto = "\n\n---\n\n".join([d.content for d in docs])
+    t_contexto = time.perf_counter() - t0
+    print(f"[timing] montagem_contexto:   {t_contexto:.6f}s  ({len(contexto)} chars)")
 
+    # 3. LLM: montagem do prompt + chamada ao Ollama (detalhado dentro de perguntar_llm/chamar_ollama)
     t1 = time.perf_counter()
     try:
         r = perguntar_llm(pergunta, contexto, modelo_cfg)
     except _OllamaOffline:
+        t_llm = time.perf_counter() - t1
+        t_total = time.perf_counter() - t_inicio
+        print(f"[timing] llm_total:           {t_llm:.3f}s  (FALHA — Ollama offline)")
+        print(f"[timing] TOTAL:               {t_total:.3f}s")
         print(f"[ollama] falha de conexão ao consultar modelo {modelo_cfg['modelo']}")
         return {
             "resposta": _MSG_OLLAMA_OFFLINE,
-            "tempo_total_s": round(time.perf_counter() - t_inicio, 3),
+            "tempo_total_s": round(t_total, 3),
             "tempo_retrieval_s": round(t_retrieval, 3), "tempo_llm_s": 0.0,
             "docs_recuperados": len(docs),
             "score_max": round(max(scores), 4) if scores else 0.0,
@@ -178,11 +244,15 @@ def responder(pergunta: str, modelo_cfg: dict) -> dict:
             "tempo_carga_s": 0.0, "tempo_prefill_s": 0.0, "tempo_geracao_s": 0.0,
         }
     t_llm = time.perf_counter() - t1
+    print(f"[timing] llm_total:           {t_llm:.3f}s")
 
     t_total = time.perf_counter() - t_inicio
     ram_depois = proc.memory_info().rss / 1024**2
     texto = r["texto"]
     tok_saida = r["tokens_saida"]
+
+    print(f"[timing] ram_delta:           {ram_depois - ram_antes:+.1f} MB")
+    print(f"[timing] TOTAL:               {t_total:.3f}s  ════════════════")
 
     return {
         "resposta": texto,

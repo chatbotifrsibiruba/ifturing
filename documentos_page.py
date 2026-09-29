@@ -6,8 +6,8 @@ from indexar import indexar_documentos
 
 load_dotenv()
 
-PASTA_DOCS  = Path(os.getenv("PASTA_DOCS",  "./documentos"))
-PASTA_FAISS =      os.getenv("PASTA_FAISS", "./faiss_index")
+PASTA_DOCS   = Path(os.getenv("PASTA_DOCS",   "./documentos"))
+PASTA_CHROMA =      os.getenv("PASTA_CHROMA", "./chroma_data")
 PASTA_DOCS.mkdir(exist_ok=True)
 
 _ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
@@ -45,7 +45,7 @@ with col1:
 if reindexar:
     with st.spinner("Reindexando... isso pode levar alguns minutos."):
         try:
-            resultado = indexar_documentos(pasta_docs=str(PASTA_DOCS), pasta_faiss=PASTA_FAISS)
+            resultado = indexar_documentos(pasta_docs=str(PASTA_DOCS), pasta_chroma=PASTA_CHROMA)
             st.success(f"✅ Reindexado! {resultado['n_arquivos']} arquivo(s), {resultado['n_chunks']} chunks.")
             st.cache_resource.clear()
         except Exception as e:
