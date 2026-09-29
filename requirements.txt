@@ -1,7 +1,7 @@
 streamlit>=1.35.0
 haystack-ai>=3.0.0
 chroma-haystack>=3.0.0
-sentence-transformers-haystack>=3.0.0
+sentence-transformers-haystack>=0.1.0
 sentence-transformers>=3.0.0
 python-dotenv>=1.0.0
 pypdf>=4.0.0
