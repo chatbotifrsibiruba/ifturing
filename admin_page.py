@@ -67,7 +67,7 @@ with st.sidebar:
         st.rerun()
 
 # ── Carrega pipeline ──────────────────────────────────────────────────
-pipeline, n_chunks = carregar_pipeline()
+pipeline, n_chunks, _ = carregar_pipeline()
 
 if pipeline is None:
     st.error("⚠️ Índice não encontrado. Execute `python indexar.py` primeiro.", icon="🚨")

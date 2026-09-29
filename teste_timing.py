@@ -21,6 +21,7 @@ from nucleo import (
     MODELOS, MODELO_PADRAO_SIMPLES,
     perguntar_llm,
     _OllamaOffline, _MSG_OLLAMA_OFFLINE,
+    _PADRAO_COTA, _buscar_tabelas_por_keyword,
 )
 from haystack import Pipeline
 from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersTextEmbedder
@@ -48,6 +49,12 @@ def carregar_pipeline():
     t_chroma = time.perf_counter() - t0
     print(f"OK — {n_chunks} chunks em {t_chroma:.3f}s")
 
+    print("[setup] Pré-carregando chunks de tabela ...", end=" ", flush=True)
+    t0 = time.perf_counter()
+    todos = document_store.filter_documents()
+    tabela_docs = [d for d in todos if (d.meta or {}).get("tipo") == "tabela"]
+    print(f"OK — {len(tabela_docs)} tabelas em {time.perf_counter() - t0:.3f}s")
+
     print("[setup] Construindo pipeline ...", end=" ", flush=True)
     t0 = time.perf_counter()
     pipeline = Pipeline()
@@ -59,16 +66,37 @@ def carregar_pipeline():
     pipeline.connect("embedder.embedding", "retriever.query_embedding")
     t_pipeline = time.perf_counter() - t0
     print(f"OK em {t_pipeline:.3f}s")
-    return pipeline
+    return pipeline, tabela_docs
 
 
-def perguntar(pipeline, pergunta: str, modelo_cfg: dict):
+def perguntar(pipeline, tabela_docs: list, pergunta: str, modelo_cfg: dict):
     # ── embed + retrieve ─────────────────────────────────────────────
     t0 = time.perf_counter()
     resultado = pipeline.run({"embedder": {"text": pergunta}})
     docs = resultado["retriever"]["documents"]
     t_retrieval = time.perf_counter() - t0
     print(f"[timing] embed+retrieve:      {t_retrieval:.3f}s  ({len(docs)} docs recuperados)")
+
+    # ── pós-filtro de cota ───────────────────────────────────────────
+    docs_antes = len(docs)
+    docs = [
+        d for d in docs
+        if (d.meta or {}).get("tipo") == "tabela" or not _PADRAO_COTA.search(d.content or "")
+    ]
+    if len(docs) < docs_antes:
+        print(f"[timing] pos_filtro_cota:     {docs_antes - len(docs)} chunk(s) removido(s)")
+
+    # ── retrieval híbrido: injeta chunks de tabela por palavra-chave ─
+    t0_hib = time.perf_counter()
+    docs_tabela_extra = _buscar_tabelas_por_keyword(pergunta, tabela_docs, docs)
+    if docs_tabela_extra:
+        docs_tabela_ja = [d for d in docs if (d.meta or {}).get("tipo") == "tabela"]
+        docs_texto_final = [d for d in docs if (d.meta or {}).get("tipo") != "tabela"]
+        docs = docs_tabela_ja + docs_tabela_extra + docs_texto_final
+        print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
+              f"({len(docs_tabela_extra)} tabelas injetadas, {len(docs)} docs total)")
+    else:
+        print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  (0 injetados)")
 
     if not docs:
         print("[timing] TOTAL (sem docs):    —")
@@ -79,7 +107,9 @@ def perguntar(pipeline, pergunta: str, modelo_cfg: dict):
     scores = [d.score for d in docs if d.score is not None]
     contexto = "\n\n---\n\n".join(d.content for d in docs)
     t_ctx = time.perf_counter() - t0
-    print(f"[timing] montagem_contexto:   {t_ctx:.6f}s  ({len(contexto)} chars)")
+    n_tabela = sum(1 for d in docs if (d.meta or {}).get("tipo") == "tabela")
+    print(f"[timing] montagem_contexto:   {t_ctx:.6f}s  ({len(contexto)} chars, "
+          f"{n_tabela} tabela(s) + {len(docs)-n_tabela} texto(s))")
 
     # ── prompt + Ollama (detalhado dentro de perguntar_llm/chamar_ollama) ─
     t1 = time.perf_counter()
@@ -111,14 +141,14 @@ def main():
     print(f"[setup] Top-K  : {TOP_K}")
     print()
 
-    pipeline = carregar_pipeline()
+    pipeline, tabela_docs = carregar_pipeline()
     print()
 
     for i, pergunta in enumerate(PERGUNTAS, 1):
         print(f"{'='*60}")
         print(f"PERGUNTA {i}: {pergunta}")
         print(f"{'='*60}")
-        perguntar(pipeline, pergunta, modelo_cfg)
+        perguntar(pipeline, tabela_docs, pergunta, modelo_cfg)
         print()
 
 

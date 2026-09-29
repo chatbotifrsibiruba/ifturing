@@ -4,6 +4,7 @@ Backend puro: constantes, MODELOS, pipeline RAG, Ollama, persistência.
 Sem layout ou CSS do Streamlit.
 """
 import os
+import re
 import time
 import psutil
 import requests
@@ -23,6 +24,58 @@ OLLAMA_URL    = os.getenv("OLLAMA_URL",    "http://localhost:11434")
 MODELO_OLLAMA = os.getenv("MODELO_OLLAMA", "llama3:latest")
 MODELO_EMB    = "intfloat/multilingual-e5-base"
 TOP_K         = 10
+
+# Detecta chunks que descrevem distribuição de cotas (ex: "C1:", "C10:")
+_PADRAO_COTA = re.compile(r"C\d{1,2}:")
+
+# Palavras que indicam perguntas sobre oferta de cursos → dispara retrieval híbrido de tabelas
+_PALAVRAS_TABELA = frozenset({
+    "curso", "cursos", "técnico", "técnicos", "tecnologia", "tecnologias",
+    "licenciatura", "licenciaturas", "superior", "superiores",
+    "vagas", "vaga", "turno", "turnos", "duração", "semestres",
+    "integrado", "subsequente", "concomitante",
+    "oferta", "disponível", "disponíveis",
+    "agropecuária", "informática", "administração", "matemática",
+    "computação", "ciência", "química",
+})
+
+_STOP_HIBRIDO = frozenset({
+    "quais", "qual", "são", "está", "estão", "para", "com", "dos", "das",
+    "nos", "nas", "uma", "como", "pode", "podem", "esse", "essa", "pelo",
+    "pela", "sobre", "mais", "onde", "quando", "também", "ainda", "muito",
+    "campus", "ibirubá",
+})
+
+
+def _buscar_tabelas_por_keyword(
+    pergunta: str,
+    tabela_docs: list,
+    docs_semanticos: list,
+) -> list:
+    """Retorna chunks de tabela que contêm pelo menos uma palavra significativa da pergunta.
+
+    Só dispara se a pergunta contiver palavras de _PALAVRAS_TABELA (ex: 'curso', 'vagas').
+    Remove documentos já presentes em docs_semanticos (dedup por id).
+    """
+    if not tabela_docs:
+        return []
+    pergunta_lower = pergunta.lower()
+    if not any(kw in pergunta_lower for kw in _PALAVRAS_TABELA):
+        return []
+
+    termos = {
+        w.strip("?!.,;:\"'()[]").lower()
+        for w in pergunta.split()
+        if len(w) > 3
+    } - _STOP_HIBRIDO
+
+    ids_semanticos = {d.id for d in docs_semanticos if d.id}
+    resultado = [
+        doc for doc in tabela_docs
+        if doc.id not in ids_semanticos
+        and any(t in (doc.content or "").lower() for t in termos)
+    ]
+    return resultado[:10]
 
 MODELOS = {
     "🖥️ LLaMA 3 (Ollama local)": {
@@ -93,16 +146,26 @@ def registrar_modelos() -> None:
 def carregar_pipeline():
     chroma_path = Path(PASTA_CHROMA)
     if not chroma_path.exists():
-        return None, 0
+        return None, 0, []
     document_store = ChromaDocumentStore(collection_name="ifturing", persist_path=str(chroma_path))
     n_chunks = document_store.count_documents()
     if n_chunks == 0:
-        return None, 0
+        return None, 0, []
+
+    # Pré-carrega todos os chunks de tabela para o retrieval híbrido (feito uma vez, cacheado)
+    try:
+        todos = document_store.filter_documents()
+        tabela_docs = [d for d in todos if (d.meta or {}).get("tipo") == "tabela"]
+    except Exception as _e:
+        print(f"[setup] aviso ao pré-carregar tabelas: {_e}")
+        tabela_docs = []
+    print(f"[setup] {len(tabela_docs)} chunks de tabela pré-carregados para retrieval híbrido")
+
     pipeline = Pipeline()
     pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model=MODELO_EMB))
     pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=document_store, top_k=TOP_K))
     pipeline.connect("embedder.embedding", "retriever.query_embedding")
-    return pipeline, n_chunks
+    return pipeline, n_chunks, tabela_docs
 
 
 class _OllamaOffline(Exception):
@@ -117,14 +180,18 @@ _MSG_OLLAMA_OFFLINE = (
 
 def chamar_ollama(prompt: str, modelo: str) -> dict:
     print(f"[timing] ollama_prompt_chars: {len(prompt)}")
+    # think:false desativa o modo de raciocínio do qwen3 (que consome tokens em <think>
+    # sem emitir resposta, deixando o campo "response" vazio)
+    payload = {
+        "model": modelo,
+        "prompt": prompt,
+        "stream": False,
+        "think": False,
+        "options": {"temperature": 0.3, "num_predict": 1024, "num_ctx": 4096},
+    }
     t_http_inicio = time.perf_counter()
     try:
-        r = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={"model": modelo, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.3, "num_predict": 1024, "num_ctx": 4096}},
-            timeout=300,
-        )
+        r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=300)
         r.raise_for_status()
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
             requests.exceptions.RequestException) as _exc:
@@ -134,6 +201,10 @@ def chamar_ollama(prompt: str, modelo: str) -> dict:
     d = r.json()
     texto = d.get("response", "")
     if not texto.strip():
+        # Log do JSON completo para diagnóstico — remove se for muito verboso em produção
+        print(f"[ollama] AVISO: response vazio! done_reason={d.get('done_reason')!r} "
+              f"done={d.get('done')} eval_count={d.get('eval_count')} "
+              f"thinking={str(d.get('thinking',''))[:120]!r}")
         texto = "O modelo não conseguiu gerar uma resposta, tente novamente ou reformule a pergunta."
 
     ns = 1_000_000_000
@@ -183,7 +254,7 @@ Pergunta: {pergunta}"""
 
 
 def responder(pergunta: str, modelo_cfg: dict) -> dict:
-    pipeline, _ = carregar_pipeline()
+    pipeline, _, tabela_docs = carregar_pipeline()
     if pipeline is None:
         raise RuntimeError("Pipeline não carregado — execute indexar.py primeiro.")
 
@@ -193,12 +264,37 @@ def responder(pergunta: str, modelo_cfg: dict) -> dict:
 
     print(f"\n[timing] ═══ início | modelo={modelo_cfg['modelo']} | pergunta={len(pergunta)} chars ═══")
 
-    # 1. Embedding da query + busca vetorial no InMemoryDocumentStore
+    # 1. Embedding da query + busca vetorial no ChromaDocumentStore
     t0 = time.perf_counter()
     resultado = pipeline.run({"embedder": {"text": pergunta}})
     docs = resultado["retriever"]["documents"]
     t_retrieval = time.perf_counter() - t0
     print(f"[timing] embed+retrieve:      {t_retrieval:.3f}s  ({len(docs)} docs recuperados)")
+
+    # Pós-filtro: descarta chunks de texto que descrevem distribuição de cotas
+    docs_antes = len(docs)
+    docs = [
+        d for d in docs
+        if (d.meta or {}).get("tipo") == "tabela" or not _PADRAO_COTA.search(d.content or "")
+    ]
+    n_removidos = docs_antes - len(docs)
+    if n_removidos:
+        print(f"[timing] pos_filtro_cota:     {n_removidos} chunk(s) removido(s)")
+
+    # Retrieval híbrido: injeta chunks de tabela relevantes por palavra-chave
+    t0_hib = time.perf_counter()
+    docs_tabela_extra = _buscar_tabelas_por_keyword(pergunta, tabela_docs, docs)
+    if docs_tabela_extra:
+        # Tabelas primeiro → LLM vê dados estruturados antes do texto livre
+        docs_tabela_ja = [d for d in docs if (d.meta or {}).get("tipo") == "tabela"]
+        docs_texto_final = [d for d in docs if (d.meta or {}).get("tipo") != "tabela"]
+        docs = docs_tabela_ja + docs_tabela_extra + docs_texto_final
+        print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
+              f"({len(docs_tabela_extra)} chunks de tabela injetados, "
+              f"{len(docs)} docs no contexto)")
+    else:
+        print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
+              f"(0 injetados)")
 
     if not docs:
         t_total = time.perf_counter() - t_inicio

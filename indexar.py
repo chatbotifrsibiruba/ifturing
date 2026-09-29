@@ -10,7 +10,6 @@ import re
 import shutil
 from pathlib import Path
 import pdfplumber
-from haystack.components.converters import PyPDFToDocument
 from haystack.components.preprocessors import DocumentSplitter, DocumentCleaner
 from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersDocumentEmbedder
 from haystack.components.writers import DocumentWriter
@@ -28,6 +27,50 @@ _LABELS = ("Curso", "Turnos", "Duração (semestres)", "Total de Vagas")
 _RE_CAMPUS_IBIRUBA = re.compile(r"campus\s+ibirub[aá]\s*[:(]", re.IGNORECASE)
 # Cabeçalho de qualquer outro campus — mesma dualidade de separador
 _RE_CAMPUS_OUTRO   = re.compile(r"campus\s+\w+(?:\s+\w+)*\s*[:(]", re.IGNORECASE)
+
+
+def extrair_texto_ibiruba(caminho_pdf: str) -> tuple[list[Document], int, int]:
+    """Extrai texto de páginas relevantes ao Campus Ibirubá (e páginas gerais).
+
+    Três estados de rastreamento por página:
+    - 'general': antes de qualquer cabeçalho de campus → inclui (regras gerais)
+    - 'ibiruba': dentro da seção Campus Ibirubá      → inclui
+    - 'outro':   dentro de seção de outro campus     → descarta
+
+    Retorna (docs, n_paginas_mantidas, n_paginas_descartadas).
+    """
+    docs: list[Document] = []
+    n_mantidas = 0
+    n_descartadas = 0
+    estado = "general"
+    nome = Path(caminho_pdf).name
+    try:
+        with pdfplumber.open(caminho_pdf) as pdf:
+            for i, page in enumerate(pdf.pages):
+                try:
+                    texto = page.extract_text() or ""
+
+                    if _RE_CAMPUS_IBIRUBA.search(texto):
+                        estado = "ibiruba"
+                    elif _RE_CAMPUS_OUTRO.search(texto):
+                        estado = "outro"
+
+                    if estado in ("general", "ibiruba") and texto.strip():
+                        n_mantidas += 1
+                        docs.append(Document(
+                            content=texto,
+                            meta={"file_path": caminho_pdf, "page_number": i + 1},
+                        ))
+                    elif texto.strip():
+                        n_descartadas += 1
+                except Exception as e:
+                    print(f"⚠️  Aviso: erro ao ler texto da página {i + 1} de {nome}: {e}")
+    except Exception as e:
+        print(f"⚠️  Aviso: erro ao abrir {nome} para extração de texto: {e}")
+
+    print(f"   📝 {nome}: {n_mantidas} pág(s) mantida(s) "
+          f"(geral/Ibirubá), {n_descartadas} de outros campi descartada(s)")
+    return docs, n_mantidas, n_descartadas
 
 
 def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
@@ -158,9 +201,17 @@ def indexar_documentos(
 
     print("\n⏳ Indexando... (pode demorar alguns minutos na primeira vez)")
 
-    # Extrai documentos de texto via PyPDFToDocument
-    converter = PyPDFToDocument()
-    text_docs = converter.run(sources=arquivos)["documents"]
+    # Extrai texto filtrando páginas por campus (geral + Ibirubá, descarta outros)
+    text_docs: list[Document] = []
+    n_pags_mantidas_total = 0
+    n_pags_descartadas_total = 0
+    for arq in arquivos:
+        docs_pag, n_m, n_d = extrair_texto_ibiruba(str(arq))
+        text_docs.extend(docs_pag)
+        n_pags_mantidas_total += n_m
+        n_pags_descartadas_total += n_d
+    if n_pags_descartadas_total:
+        print(f"   📋 Total texto: {n_pags_descartadas_total} página(s) de outros campi descartada(s)")
 
     # Extrai linhas de tabelas de todos os PDFs
     table_docs: list[Document] = []
@@ -196,7 +247,7 @@ def indexar_documentos(
     chunks_texto_raw = split_text["documents"]
     chunks_texto = [
         c for c in chunks_texto_raw
-        if len(_PADRAO_COTA.findall(c.content or "")) < 4
+        if not _PADRAO_COTA.search(c.content or "")
     ]
     n_descartados = len(chunks_texto_raw) - len(chunks_texto)
     if n_descartados:
