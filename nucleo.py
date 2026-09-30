@@ -28,15 +28,16 @@ TOP_K         = 10
 # Detecta chunks que descrevem distribuição de cotas (ex: "C1:", "C10:")
 _PADRAO_COTA = re.compile(r"C\d{1,2}:")
 
-# Palavras que indicam perguntas sobre oferta de cursos → dispara retrieval híbrido de tabelas
+# Palavras que disparam a lógica de retrieval híbrido de tabelas
 _PALAVRAS_TABELA = frozenset({
     "curso", "cursos", "técnico", "técnicos", "tecnologia", "tecnologias",
-    "licenciatura", "licenciaturas", "superior", "superiores",
+    "licenciatura", "licenciaturas", "superior", "superiores", "graduação",
+    "bacharelado", "bacharelados",
     "vagas", "vaga", "turno", "turnos", "duração", "semestres",
     "integrado", "subsequente", "concomitante",
     "oferta", "disponível", "disponíveis",
     "agropecuária", "informática", "administração", "matemática",
-    "computação", "ciência", "química",
+    "computação", "ciência", "química", "agronomia", "engenharia",
 })
 
 _STOP_HIBRIDO = frozenset({
@@ -46,15 +47,73 @@ _STOP_HIBRIDO = frozenset({
     "campus", "ibirubá",
 })
 
+# Termos genéricos que aparecem em qualquer pergunta sobre cursos mas não identificam um
+# chunk específico (ex: "cursos" aparece em todos os chunks como "Curso: …")
+_TERMOS_GENERICOS = frozenset({
+    "curso", "cursos", "vaga", "vagas", "turno", "turnos",
+    "duração", "semestre", "semestres", "total",
+    "oferta", "oferece", "oferecer", "oferecidos", "oferecidas",
+    "disponível", "disponíveis", "quantas", "quantos",
+})
+
+# Mapeamento de termos da pergunta → tipos internos de chunk de tabela que devem ser incluídos.
+# Permite que "superiores"/"graduação" encontrem chunks com "Bacharelado em" ou "Licenciatura em".
+_SINONIMOS_TIPO: dict = {
+    "técnico":       frozenset({"tecnico"}),
+    "técnicos":      frozenset({"tecnico"}),
+    "superior":      frozenset({"licenciatura", "bacharelado", "superior"}),
+    "superiores":    frozenset({"licenciatura", "bacharelado", "superior"}),
+    "graduação":     frozenset({"licenciatura", "bacharelado", "superior"}),
+    "graduacao":     frozenset({"licenciatura", "bacharelado", "superior"}),
+    "licenciatura":  frozenset({"licenciatura"}),
+    "licenciaturas": frozenset({"licenciatura"}),
+    "bacharelado":   frozenset({"bacharelado", "superior"}),
+    "bacharelados":  frozenset({"bacharelado", "superior"}),
+    "tecnologia":    frozenset({"tecnologia"}),
+    "tecnologias":   frozenset({"tecnologia"}),
+    "integrado":     frozenset({"integrado"}),
+    "integrados":    frozenset({"integrado"}),
+    "subsequente":   frozenset({"subsequente"}),
+    "subsequentes":  frozenset({"subsequente"}),
+    "concomitante":  frozenset({"concomitante"}),
+    "concomitantes": frozenset({"concomitante"}),
+}
+
+
+def _tipo_tabela_chunk(content: str) -> str:
+    """Infere o tipo de curso a partir do conteúdo do chunk de tabela.
+
+    Usa prefixos canônicos do IFRS: 'Técnico em', 'Licenciatura em',
+    'Bacharelado em', 'Tecnologia em'. Demais cursos são tratados como
+    superiores sem prefixo explícito (bacharelado implícito).
+    """
+    lower = content.lower()
+    if "técnico em" in lower:
+        return "tecnico"
+    if "licenciatura em" in lower:
+        return "licenciatura"
+    if "bacharelado em" in lower:
+        return "bacharelado"
+    if "tecnologia em" in lower:
+        return "tecnologia"
+    return "superior"
+
 
 def _buscar_tabelas_por_keyword(
     pergunta: str,
     tabela_docs: list,
     docs_semanticos: list,
 ) -> list:
-    """Retorna chunks de tabela que contêm pelo menos uma palavra significativa da pergunta.
+    """Retorna chunks de tabela relevantes à pergunta por tipo-de-curso e por nome.
 
-    Só dispara se a pergunta contiver palavras de _PALAVRAS_TABELA (ex: 'curso', 'vagas').
+    Estratégia dual:
+    1. Tipo-de-curso: termos em _SINONIMOS_TIPO (ex: 'superiores') são expandidos para
+       os tipos reais usados nos chunks ('bacharelado', 'licenciatura', 'superior'),
+       e TODOS os chunks desses tipos são incluídos.
+    2. Nome-específico: demais termos não-genéricos são buscados literalmente no
+       conteúdo do chunk, com variante singular/plural simples (±s final).
+
+    Só dispara se a pergunta contiver alguma palavra de _PALAVRAS_TABELA.
     Remove documentos já presentes em docs_semanticos (dedup por id).
     """
     if not tabela_docs:
@@ -63,19 +122,42 @@ def _buscar_tabelas_por_keyword(
     if not any(kw in pergunta_lower for kw in _PALAVRAS_TABELA):
         return []
 
-    termos = {
+    termos_pergunta = {
         w.strip("?!.,;:\"'()[]").lower()
         for w in pergunta.split()
         if len(w) > 3
     } - _STOP_HIBRIDO
 
+    # Critério 1: tipos de curso requisitados (expansão semântica de categoria)
+    tipos_solicitados: set = set()
+    for t in termos_pergunta:
+        if t in _SINONIMOS_TIPO:
+            tipos_solicitados |= _SINONIMOS_TIPO[t]
+
+    # Critério 2: termos específicos de nome de curso, com variante ±s
+    termos_match: set = set()
+    for t in termos_pergunta:
+        if t in _SINONIMOS_TIPO or t in _TERMOS_GENERICOS:
+            continue
+        termos_match.add(t)
+        if t.endswith("s") and len(t) > 4:
+            termos_match.add(t[:-1])   # "técnicos" → "técnico" (fallback genérico)
+        else:
+            termos_match.add(t + "s")  # "informática" → "informáticas"
+
     ids_semanticos = {d.id for d in docs_semanticos if d.id}
-    resultado = [
-        doc for doc in tabela_docs
-        if doc.id not in ids_semanticos
-        and any(t in (doc.content or "").lower() for t in termos)
-    ]
-    return resultado[:10]
+    resultado = []
+    for doc in tabela_docs:
+        if doc.id in ids_semanticos:
+            continue
+        content = doc.content or ""
+        content_lower = content.lower()
+        if tipos_solicitados and _tipo_tabela_chunk(content) in tipos_solicitados:
+            resultado.append(doc)
+        elif termos_match and any(t in content_lower for t in termos_match):
+            resultado.append(doc)
+
+    return resultado[:20]
 
 MODELOS = {
     "🖥️ LLaMA 3 (Ollama local)": {
