@@ -99,7 +99,8 @@ def _tipo_tabela_chunk(content: str) -> str:
     return "superior"
 
 
-_DEBUG_HIBRIDO = os.getenv("DEBUG_HIBRIDO", "").strip() not in ("", "0", "false", "no")
+_DEBUG_HIBRIDO   = os.getenv("DEBUG_HIBRIDO",   "").strip() not in ("", "0", "false", "no")
+_DEBUG_CONTEXTO  = os.getenv("DEBUG_CONTEXTO",  "").strip() not in ("", "0", "false", "no")
 
 
 def _buscar_tabelas_por_keyword(
@@ -337,11 +338,13 @@ def chamar_ollama(prompt: str, modelo: str) -> dict:
 def perguntar_llm(pergunta: str, contexto: str, modelo_cfg: dict) -> dict:
     t0 = time.perf_counter()
     prompt = f"""Você é um assistente especializado nos documentos do processo seletivo do IFRS.
+ESCOPO: Todas as informações fornecidas no contexto abaixo referem-se exclusivamente ao IFRS – Campus Ibirubá (Instituto Federal do Rio Grande do Sul, Campus Ibirubá). Ao responder, trate o contexto como sendo sempre sobre esse campus específico — não presuma nem mencione outros campi do IFRS, a menos que o usuário pergunte explicitamente sobre outro campus.
 Responda à pergunta usando SOMENTE as informações do contexto abaixo.
 Regras obrigatórias:
 - Responda diretamente, em português, sem introduções nem rótulos como "Resposta:", "Inferência:" ou similares.
 - Nunca comente sobre como a resposta foi construída, deduzida ou inferida.
-- Ao listar cursos, use exatamente os nomes, turnos e dados que aparecem no contexto — não invente nem complete informações ausentes.
+- COMPLETUDE OBRIGATÓRIA: ao listar cursos, percorra TODO o contexto e inclua TODOS os cursos do tipo perguntado. Cada linha que começa com "Curso:" é um curso diferente — não pule nem omita nenhum. Só encerre a lista depois de verificar todas as linhas "Curso:" presentes.
+- Use exatamente os nomes, turnos e dados que aparecem no contexto — não invente nem complete informações ausentes.
 - Cada linha do contexto é um registro independente: use APENAS os dados que aparecem juntos na MESMA linha. Nunca combine o nome de um curso com turno, duração ou vagas de uma linha diferente.
 - Se o contexto trouxer cursos de categorias diferentes (técnico integrado, técnico subsequente, superior), responda apenas com os cursos que pertencem à categoria perguntada, sem misturar categorias.
 - Se a informação não estiver no contexto, responda apenas: "Não encontrei essa informação nos documentos."
@@ -420,7 +423,19 @@ def responder(pergunta: str, modelo_cfg: dict) -> dict:
     scores = [d.score for d in docs if d.score is not None]
     contexto = "\n\n---\n\n".join([d.content for d in docs])
     t_contexto = time.perf_counter() - t0
-    print(f"[timing] montagem_contexto:   {t_contexto:.6f}s  ({len(contexto)} chars)")
+    n_tab_ctx = sum(1 for d in docs if (d.meta or {}).get("tipo") == "tabela")
+    print(f"[timing] montagem_contexto:   {t_contexto:.6f}s  "
+          f"({len(contexto)} chars | {n_tab_ctx} tabela + {len(docs)-n_tab_ctx} texto)")
+
+    if _DEBUG_CONTEXTO:
+        print("\n" + "─" * 72)
+        print(f"[DEBUG_CONTEXTO] {len(docs)} docs no contexto:")
+        for i, d in enumerate(docs, 1):
+            tipo = (d.meta or {}).get("tipo", "texto")
+            src  = (d.meta or {}).get("source", (d.meta or {}).get("file_path", "?"))
+            print(f"  [{i:02d}] tipo={tipo}  src={src}")
+            print(f"        {(d.content or '')!r}")
+        print("─" * 72 + "\n")
 
     # 3. LLM: montagem do prompt + chamada ao Ollama (detalhado dentro de perguntar_llm/chamar_ollama)
     t1 = time.perf_counter()
