@@ -19,11 +19,12 @@ from db import upsert_modelo, inserir_consulta
 
 load_dotenv()
 
-PASTA_CHROMA  = os.getenv("PASTA_CHROMA",  "./chroma_data")
-OLLAMA_URL    = os.getenv("OLLAMA_URL",    "http://localhost:11434")
-MODELO_OLLAMA = os.getenv("MODELO_OLLAMA", "llama3:latest")
-MODELO_EMB    = "intfloat/multilingual-e5-base"
-TOP_K         = 10
+PASTA_CHROMA   = os.getenv("PASTA_CHROMA",  "./chroma_data")
+OLLAMA_URL     = os.getenv("OLLAMA_URL",    "http://localhost:11434")
+MODELO_OLLAMA  = os.getenv("MODELO_OLLAMA", "llama3:latest")
+MARITACA_URL   = "https://chat.maritaca.ai/api/chat/completions"
+MODELO_EMB     = "intfloat/multilingual-e5-base"
+TOP_K          = 10
 
 # Detecta chunks que descrevem distribuição de cotas (ex: "C1:", "C10:")
 _PADRAO_COTA = re.compile(r"C\d{1,2}:")
@@ -196,21 +197,27 @@ MODELOS = {
         "tipo": "ollama", "modelo": "qwen3:0.6b",
         "descricao": "Local no servidor", "params_b": 0.6, "quantizacao": "Q4_0",
     },
+    "🌐 Sabiá-4 (Maritaca)": {
+        "tipo": "maritaca", "modelo": "sabia-4",
+        "descricao": "API Maritaca (nuvem)", "params_b": 0.0, "quantizacao": "—",
+    },
 }
 
 MODELO_PADRAO_SIMPLES = "🖥️ Qwen3 0.6B (Ollama local)"
+_MODELO_PADRAO_ID     = "qwen3:0.6b"
 
 
 @st.cache_data(ttl=60)
 def listar_modelos_ollama() -> dict:
     """Consulta GET /api/tags no Ollama e retorna dict no mesmo formato de MODELOS.
-    Fallback para MODELOS fixo se o Ollama estiver inacessível."""
+    Sempre inclui Maritaca ao final. Fallback para MODELOS fixo se o Ollama estiver inacessível."""
+    _maritaca_entry = {"🌐 Sabiá-4 (Maritaca)": MODELOS["🌐 Sabiá-4 (Maritaca)"]}
     try:
         r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
         r.raise_for_status()
         itens = r.json().get("models", [])
         if not itens:
-            return MODELOS
+            return {**MODELOS, **_maritaca_entry}
         resultado = {}
         for m in itens:
             nome = m["name"]
@@ -228,9 +235,10 @@ def listar_modelos_ollama() -> dict:
                 "params_b": params_b,
                 "quantizacao": quant,
             }
+        resultado.update(_maritaca_entry)
         return resultado
     except Exception:
-        return MODELOS
+        return {**MODELOS, **_maritaca_entry}
 
 
 def registrar_modelos() -> None:
@@ -271,6 +279,10 @@ def carregar_pipeline():
 
 
 class _OllamaOffline(Exception):
+    pass
+
+
+class _MaritacaError(Exception):
     pass
 
 
@@ -335,6 +347,56 @@ def chamar_ollama(prompt: str, modelo: str) -> dict:
     }
 
 
+def chamar_maritaca(prompt: str, modelo: str) -> dict:
+    api_key = os.getenv("MARITACA_API_KEY", "").strip()
+    if not api_key:
+        raise _MaritacaError("MARITACA_API_KEY não configurada no ambiente")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": modelo,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    print(f"[timing] maritaca_prompt_chars: {len(prompt)}")
+    t_http_inicio = time.perf_counter()
+    try:
+        r = requests.post(MARITACA_URL, json=payload, headers=headers, timeout=120)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+        raise _MaritacaError("Timeout ou falha de conexão com a API Maritaca") from exc
+    t_http = time.perf_counter() - t_http_inicio
+
+    if r.status_code == 401:
+        raise _MaritacaError("Chave de API inválida ou sem permissão (HTTP 401)")
+    if r.status_code == 429:
+        raise _MaritacaError("Limite de requisições atingido na API Maritaca (HTTP 429)")
+    try:
+        r.raise_for_status()
+    except requests.exceptions.HTTPError as exc:
+        raise _MaritacaError(f"Erro HTTP {r.status_code} na API Maritaca") from exc
+
+    d = r.json()
+    texto = d["choices"][0]["message"]["content"]
+    uso = d.get("usage", {})
+    tok_entrada = uso.get("prompt_tokens", 0)
+    tok_saida   = uso.get("completion_tokens", 0)
+
+    print(f"[timing] maritaca_http_total:   {t_http:.3f}s")
+    print(f"[timing] maritaca_tokens:       {tok_entrada}→{tok_saida}")
+    print(f"[timing] maritaca_resposta_chars: {len(texto)}")
+
+    return {
+        "texto": texto,
+        "tokens_entrada": tok_entrada,
+        "tokens_saida": tok_saida,
+        "tokens_total": tok_entrada + tok_saida,
+        "tempo_carga_s": 0.0,
+        "tempo_prefill_s": 0.0,
+        "tempo_geracao_s": round(t_http, 3),
+    }
+
+
 def perguntar_llm(pergunta: str, contexto: str, modelo_cfg: dict) -> dict:
     t0 = time.perf_counter()
     prompt = f"""Você é um assistente especializado nos documentos do processo seletivo do IFRS.
@@ -354,6 +416,8 @@ Contexto:
 
 Pergunta: {pergunta}"""
     print(f"[timing] montagem_prompt:     {time.perf_counter() - t0:.6f}s  ({len(prompt)} chars total)")
+    if modelo_cfg.get("tipo") == "maritaca":
+        return chamar_maritaca(prompt, modelo_cfg["modelo"])
     return chamar_ollama(prompt, modelo_cfg["modelo"])
 
 
@@ -441,14 +505,19 @@ def responder(pergunta: str, modelo_cfg: dict) -> dict:
     t1 = time.perf_counter()
     try:
         r = perguntar_llm(pergunta, contexto, modelo_cfg)
-    except _OllamaOffline:
+    except (_OllamaOffline, _MaritacaError) as exc:
         t_llm = time.perf_counter() - t1
         t_total = time.perf_counter() - t_inicio
-        print(f"[timing] llm_total:           {t_llm:.3f}s  (FALHA — Ollama offline)")
+        is_maritaca = isinstance(exc, _MaritacaError)
+        tag = "Maritaca" if is_maritaca else "Ollama"
+        print(f"[timing] llm_total:           {t_llm:.3f}s  (FALHA — {tag} erro: {exc})")
         print(f"[timing] TOTAL:               {t_total:.3f}s")
-        print(f"[ollama] falha de conexão ao consultar modelo {modelo_cfg['modelo']}")
+        if is_maritaca:
+            msg_erro = f"⚠️ Erro ao consultar Maritaca: {exc}."
+        else:
+            msg_erro = _MSG_OLLAMA_OFFLINE
         return {
-            "resposta": _MSG_OLLAMA_OFFLINE,
+            "resposta": msg_erro,
             "tempo_total_s": round(t_total, 3),
             "tempo_retrieval_s": round(t_retrieval, 3), "tempo_llm_s": 0.0,
             "docs_recuperados": len(docs),

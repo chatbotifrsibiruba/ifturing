@@ -8,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from db import init_db, get_or_create_sessao, inserir_feedback
 from nucleo import (
-    MODELO_PADRAO_SIMPLES, MODELO_EMB, TOP_K,
+    MODELO_PADRAO_SIMPLES, _MODELO_PADRAO_ID, MODELO_EMB, TOP_K,
     listar_modelos_ollama,
     registrar_modelos, carregar_pipeline,
     responder, salvar_consulta_no_banco, formatar_metricas,
@@ -393,8 +393,17 @@ with st.sidebar:
 
     if MODO_SIMPLES:
         _modelos = listar_modelos_ollama()
-        modelo_selecionado = MODELO_PADRAO_SIMPLES
-        cfg = _modelos.get(MODELO_PADRAO_SIMPLES) or next(iter(_modelos.values()))
+        # Fallback robusto: tenta chave estática → busca por ID → primeiro disponível.
+        # Necessário porque listar_modelos_ollama() gera chaves como "🖥️ qwen3:0.6b (Ollama local)"
+        # enquanto MODELO_PADRAO_SIMPLES usa o formato de exibição legível.
+        cfg = (
+            _modelos.get(MODELO_PADRAO_SIMPLES)
+            or next((v for v in _modelos.values() if v.get("modelo") == _MODELO_PADRAO_ID), None)
+            or next(iter(_modelos.values()))
+        )
+        modelo_selecionado = next(
+            (k for k, v in _modelos.items() if v is cfg), MODELO_PADRAO_SIMPLES
+        )
         if st.button("🗑️ Limpar conversa", use_container_width=True):
             st.session_state.historico = [{
                 "role": "assistant",
