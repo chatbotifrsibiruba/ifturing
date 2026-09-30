@@ -29,6 +29,13 @@ TOP_K          = 10
 # Detecta chunks que descrevem distribuição de cotas (ex: "C1:", "C10:")
 _PADRAO_COTA = re.compile(r"C\d{1,2}:")
 
+# Palavras que disparam o retrieval híbrido de cronograma/datas
+_PALAVRAS_CRONOGRAMA = frozenset({
+    "data", "datas", "cronograma", "prazo", "prazos",
+    "inscrição", "inscricao", "quando", "período", "periodo",
+    "calendário", "calendario", "etapa", "etapas",
+})
+
 # Palavras que disparam a lógica de retrieval híbrido de tabelas
 _PALAVRAS_TABELA = frozenset({
     "curso", "cursos", "técnico", "técnicos", "tecnologia", "tecnologias",
@@ -79,6 +86,30 @@ _SINONIMOS_TIPO: dict = {
     "concomitante":  frozenset({"concomitante"}),
     "concomitantes": frozenset({"concomitante"}),
 }
+
+
+def _buscar_cronograma_por_keyword(
+    pergunta: str,
+    cronograma_docs: list,
+    docs_semanticos: list,
+) -> list:
+    """Injeta chunks de texto com 'cronograma' quando a pergunta menciona datas/prazos.
+
+    Garante que o cronograma do processo seletivo entre no contexto mesmo quando o
+    score semântico não é suficiente para colocá-lo no top-K.
+    """
+    if not cronograma_docs:
+        return []
+    pergunta_lower = pergunta.lower()
+    if not any(kw in pergunta_lower for kw in _PALAVRAS_CRONOGRAMA):
+        if _DEBUG_HIBRIDO:
+            print("[debug_hibrido] pergunta sem palavras de _PALAVRAS_CRONOGRAMA → skip cronograma")
+        return []
+    ids_semanticos = {d.id for d in docs_semanticos if d.id}
+    extras = [d for d in cronograma_docs if d.id not in ids_semanticos]
+    if _DEBUG_HIBRIDO:
+        print(f"[debug_hibrido] cronograma: {len(extras)} chunks injetados")
+    return extras
 
 
 def _tipo_tabela_chunk(content: str) -> str:
@@ -262,20 +293,27 @@ def carregar_pipeline():
     if n_chunks == 0:
         return None, 0, []
 
-    # Pré-carrega todos os chunks de tabela para o retrieval híbrido (feito uma vez, cacheado)
+    # Pré-carrega chunks de tabela e cronograma para retrieval híbrido (feito uma vez, cacheado)
     try:
         todos = document_store.filter_documents()
         tabela_docs = [d for d in todos if (d.meta or {}).get("tipo") == "tabela"]
+        cronograma_docs = [
+            d for d in todos
+            if (d.meta or {}).get("tipo") != "tabela"
+            and "cronograma" in (d.content or "").lower()
+        ]
     except Exception as _e:
-        print(f"[setup] aviso ao pré-carregar tabelas: {_e}")
+        print(f"[setup] aviso ao pré-carregar docs: {_e}")
         tabela_docs = []
+        cronograma_docs = []
     print(f"[setup] {len(tabela_docs)} chunks de tabela pré-carregados para retrieval híbrido")
+    print(f"[setup] {len(cronograma_docs)} chunks de cronograma pré-carregados para retrieval híbrido")
 
     pipeline = Pipeline()
     pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model=MODELO_EMB))
     pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=document_store, top_k=TOP_K))
     pipeline.connect("embedder.embedding", "retriever.query_embedding")
-    return pipeline, n_chunks, tabela_docs
+    return pipeline, n_chunks, tabela_docs, cronograma_docs
 
 
 class _OllamaOffline(Exception):
@@ -422,7 +460,7 @@ Pergunta: {pergunta}"""
 
 
 def responder(pergunta: str, modelo_cfg: dict) -> dict:
-    pipeline, _, tabela_docs = carregar_pipeline()
+    pipeline, _, tabela_docs, cronograma_docs = carregar_pipeline()
     if pipeline is None:
         raise RuntimeError("Pipeline não carregado — execute indexar.py primeiro.")
 
@@ -467,6 +505,17 @@ def responder(pergunta: str, modelo_cfg: dict) -> dict:
     else:
         print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
               f"(0 injetados)")
+
+    # Retrieval híbrido: injeta chunks de cronograma quando a pergunta menciona datas/prazos
+    t0_crono = time.perf_counter()
+    docs_crono_extra = _buscar_cronograma_por_keyword(pergunta, cronograma_docs, docs)
+    if docs_crono_extra:
+        # Cronograma no início → LLM lê as datas antes do restante do contexto
+        docs = docs_crono_extra + docs
+        print(f"[timing] hibrido_cronograma:  {time.perf_counter() - t0_crono:.6f}s  "
+              f"({len(docs_crono_extra)} cronograma injetados, {len(docs)} docs total)")
+    else:
+        print(f"[timing] hibrido_cronograma:  {time.perf_counter() - t0_crono:.6f}s  (0 injetados)")
 
     if not docs:
         t_total = time.perf_counter() - t_inicio
@@ -564,6 +613,15 @@ def responder(pergunta: str, modelo_cfg: dict) -> dict:
 
 def salvar_consulta_no_banco(sessao_id: int, modelo_cfg: dict, pergunta: str, m: dict) -> int | None:
     try:
+        # Garante que o modelo está registrado antes de inserir a consulta.
+        # Necessário para modelos dinâmicos do Ollama que não constam no dict MODELOS estático.
+        upsert_modelo(
+            modelo_id=modelo_cfg["modelo"],
+            nome_bonito=modelo_cfg.get("descricao"),
+            tipo=modelo_cfg.get("tipo", "ollama"),
+            params_b=modelo_cfg.get("params_b"),
+            quantizacao=modelo_cfg.get("quantizacao"),
+        )
         return inserir_consulta(
             sessao_id=sessao_id,
             modelo_id=modelo_cfg["modelo"],

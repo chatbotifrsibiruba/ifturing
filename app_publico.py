@@ -537,7 +537,7 @@ Assistente virtual
 """, unsafe_allow_html=True)
 
 # ── Carrega índice ───────────────────────────────────────────────────
-pipeline, n_chunks, _ = carregar_pipeline()
+pipeline, n_chunks, *_ = carregar_pipeline()
 
 # ── Topbar da área de chat ───────────────────────────────────────────
 st.markdown("""
