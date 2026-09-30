@@ -99,6 +99,9 @@ def _tipo_tabela_chunk(content: str) -> str:
     return "superior"
 
 
+_DEBUG_HIBRIDO = os.getenv("DEBUG_HIBRIDO", "").strip() not in ("", "0", "false", "no")
+
+
 def _buscar_tabelas_por_keyword(
     pergunta: str,
     tabela_docs: list,
@@ -115,11 +118,14 @@ def _buscar_tabelas_por_keyword(
 
     Só dispara se a pergunta contiver alguma palavra de _PALAVRAS_TABELA.
     Remove documentos já presentes em docs_semanticos (dedup por id).
+    Ative DEBUG_HIBRIDO=1 para ver trace detalhado do matching.
     """
     if not tabela_docs:
         return []
     pergunta_lower = pergunta.lower()
     if not any(kw in pergunta_lower for kw in _PALAVRAS_TABELA):
+        if _DEBUG_HIBRIDO:
+            print("[debug_hibrido] pergunta não contém palavras de _PALAVRAS_TABELA → skip")
         return []
 
     termos_pergunta = {
@@ -145,16 +151,29 @@ def _buscar_tabelas_por_keyword(
         else:
             termos_match.add(t + "s")  # "informática" → "informáticas"
 
+    if _DEBUG_HIBRIDO:
+        print(f"[debug_hibrido] termos_pergunta  = {sorted(termos_pergunta)}")
+        print(f"[debug_hibrido] tipos_solicitados= {sorted(tipos_solicitados)}")
+        print(f"[debug_hibrido] termos_match     = {sorted(termos_match)}")
+        print(f"[debug_hibrido] total tabela_docs = {len(tabela_docs)}")
+
     ids_semanticos = {d.id for d in docs_semanticos if d.id}
     resultado = []
     for doc in tabela_docs:
-        if doc.id in ids_semanticos:
-            continue
         content = doc.content or ""
-        content_lower = content.lower()
-        if tipos_solicitados and _tipo_tabela_chunk(content) in tipos_solicitados:
-            resultado.append(doc)
-        elif termos_match and any(t in content_lower for t in termos_match):
+        tipo = _tipo_tabela_chunk(content)
+        ja_semantico = doc.id in ids_semanticos
+        bate_tipo = bool(tipos_solicitados and tipo in tipos_solicitados)
+        bate_nome = bool(termos_match and any(t in content.lower() for t in termos_match))
+
+        if _DEBUG_HIBRIDO:
+            print(f"[debug_hibrido]   id={doc.id!r:<38} tipo={tipo:<12} "
+                  f"semantico={ja_semantico}  bate_tipo={bate_tipo}  bate_nome={bate_nome}"
+                  f"\n                  conteudo={content[:80]!r}")
+
+        if ja_semantico:
+            continue
+        if bate_tipo or bate_nome:
             resultado.append(doc)
 
     return resultado[:20]
@@ -269,7 +288,7 @@ def chamar_ollama(prompt: str, modelo: str) -> dict:
         "prompt": prompt,
         "stream": False,
         "think": False,
-        "options": {"temperature": 0.3, "num_predict": 1024, "num_ctx": 4096},
+        "options": {"temperature": 0.3, "num_predict": 1024, "num_ctx": 8192},
     }
     t_http_inicio = time.perf_counter()
     try:
@@ -368,12 +387,16 @@ def responder(pergunta: str, modelo_cfg: dict) -> dict:
     docs_tabela_extra = _buscar_tabelas_por_keyword(pergunta, tabela_docs, docs)
     if docs_tabela_extra:
         # Tabelas primeiro → LLM vê dados estruturados antes do texto livre
-        docs_tabela_ja = [d for d in docs if (d.meta or {}).get("tipo") == "tabela"]
+        docs_tabela_ja  = [d for d in docs if (d.meta or {}).get("tipo") == "tabela"]
         docs_texto_final = [d for d in docs if (d.meta or {}).get("tipo") != "tabela"]
+        # Quando há injeção de tabelas, reduz chunks de texto para 6 para preservar
+        # espaço de geração sem sacrificar o contexto estruturado mais confiável
+        docs_texto_final = docs_texto_final[:6]
         docs = docs_tabela_ja + docs_tabela_extra + docs_texto_final
+        n_tab = len(docs_tabela_ja) + len(docs_tabela_extra)
         print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
-              f"({len(docs_tabela_extra)} chunks de tabela injetados, "
-              f"{len(docs)} docs no contexto)")
+              f"({len(docs_tabela_extra)} tabelas injetadas → "
+              f"{n_tab} tab + {len(docs_texto_final)} texto = {len(docs)} docs)")
     else:
         print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
               f"(0 injetados)")
