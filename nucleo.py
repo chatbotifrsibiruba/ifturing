@@ -301,7 +301,7 @@ def chamar_ollama(prompt: str, modelo: str) -> dict:
         "prompt": prompt,
         "stream": False,
         "think": False,
-        "options": {"temperature": 0.3, "num_predict": 1024, "num_ctx": 8192},
+        "options": {"temperature": 0.0, "num_predict": 1024, "num_ctx": 8192},
     }
     t_http_inicio = time.perf_counter()
     try:
