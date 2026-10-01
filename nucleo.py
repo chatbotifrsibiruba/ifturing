@@ -29,6 +29,11 @@ TOP_K          = 10
 # Detecta chunks que descrevem distribuição de cotas (ex: "C1:", "C10:")
 _PADRAO_COTA = re.compile(r"C\d{1,2}:")
 
+# Detecta datas recentes no formato dd/mm/202X (anos 2024-2029).
+# Usado para capturar chunks de continuação do cronograma que não contêm a palavra "cronograma"
+# mas pertencem à tabela (ex: "06/12/2026 Aplicação das provas").
+_PADRAO_DATA_RECENTE = re.compile(r"\d{1,2}/\d{2}/202[4-9]")
+
 # Palavras que disparam o retrieval híbrido de cronograma/datas
 _PALAVRAS_CRONOGRAMA = frozenset({
     "data", "datas", "cronograma", "prazo", "prazos",
@@ -300,7 +305,10 @@ def carregar_pipeline():
         cronograma_docs = [
             d for d in todos
             if (d.meta or {}).get("tipo") != "tabela"
-            and "cronograma" in (d.content or "").lower()
+            and (
+                "cronograma" in (d.content or "").lower()
+                or len(_PADRAO_DATA_RECENTE.findall(d.content or "")) >= 3
+            )
         ]
     except Exception as _e:
         print(f"[setup] aviso ao pré-carregar docs: {_e}")

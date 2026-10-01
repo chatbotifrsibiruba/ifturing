@@ -10,3 +10,7 @@ venv/
 ifturing.db
 chroma_data/b79a372d-964a-4b64-9e85-efebbdaaaeca/link_lists.bin
 /chroma_data
+_diag_data_chunks.py
+_diag_cronograma2.py
+_diag_cronograma.py
+_check_crono_novo.py
