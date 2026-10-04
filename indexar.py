@@ -23,10 +23,40 @@ load_dotenv()
 
 _LABELS = ("Curso", "Turnos", "Duração (semestres)", "Total de Vagas")
 
-# Cabeçalho de seção Ibirubá: "Campus Ibirubá:" (cota) ou "Campus Ibirubá (" (resumo)
+# Cabeçalho de seção Ibirubá: "Campus Ibirubá:" (corpo/Annexo 2) ou "Campus Ibirubá (" (Annexo 1)
 _RE_CAMPUS_IBIRUBA = re.compile(r"campus\s+ibirub[aá]\s*[:(]", re.IGNORECASE)
-# Cabeçalho de qualquer outro campus — mesma dualidade de separador
-_RE_CAMPUS_OUTRO   = re.compile(r"campus\s+\w+(?:\s+\w+)*\s*[:(]", re.IGNORECASE)
+
+# Para páginas de TEXTO: seções do corpo usam "Campus X:" — exige ':' para não casar com
+# referências inline como "campus Osório é na modalidade de … (EaD)" onde o '(' do '(EaD)'
+# ativaria erroneamente a troca de estado e descartaria o cronograma geral.
+_RE_CAMPUS_OUTRO = re.compile(r"campus\s+\w+(?:\s+\w+)*\s*:", re.IGNORECASE)
+
+# Para páginas de TABELA: o PDF tem dois formatos de cabeçalho de annexo —
+#   Annexo 1: "Campus Farroupilha (a descrição das vagas está após a tabela)"  → usa '('
+#   Annexo 2: "Campus Farroupilha: A descrição da tabela encontra-se ao final" → usa ':'
+# Limita o nome do campus a no máximo 3 palavras para não casar com o falso positivo
+# "campus Osório é na modalidade de … (EaD)" (5+ palavras entre o nome e o '(').
+_RE_CAMPUS_OUTRO_TABELA = re.compile(r"campus\s+\w+(?:\s+\w+){0,2}\s*[:(]", re.IGNORECASE)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ATENÇÃO: atualizar este conjunto a cada novo edital do IFRS – Campus Ibirubá.
+# Serve como rede de segurança (Opção C) contra falsos positivos do detector de
+# campus por regex: qualquer linha de tabela extraída cujo campo 'Curso:' não
+# corresponda a um curso real de Ibirubá é descartada com aviso de auditoria.
+# ─────────────────────────────────────────────────────────────────────────────
+_CURSOS_IBIRUBA: frozenset = frozenset({
+    # Técnico integrado ao Ensino Médio
+    "Técnico em Agropecuária",
+    "Técnico em Informática",
+    "Técnico em Mecânica",
+    # Técnico concomitante/subsequente
+    "Técnico em Eletrotécnica",
+    # Cursos superiores (Bacharelado e Licenciatura)
+    "Bacharelado em Agronomia",
+    "Bacharelado em Ciência da Computação",
+    "Bacharelado em Engenharia Mecânica",
+    "Licenciatura em Matemática",
+})
 
 
 def extrair_texto_ibiruba(caminho_pdf: str) -> tuple[list[Document], int, int]:
@@ -80,10 +110,10 @@ def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
     Total de Vagas). Colunas 4+ (cotas C1-C10) são sempre descartadas.
 
     Filtro de campus: só inclui tabelas de páginas dentro da seção do
-    Campus Ibirubá. Ativa ao encontrar 'Campus Ibirubá:' e desativa ao
-    encontrar o cabeçalho de qualquer outro campus. Continuações de tabela
-    em páginas sem cabeçalho explícito são mantidas enquanto o estado estiver
-    ativo.
+    Campus Ibirubá. Ativa ao encontrar 'Campus Ibirubá:' ou 'Campus Ibirubá ('
+    e desativa ao encontrar o cabeçalho de qualquer outro campus em qualquer
+    dos dois formatos de annexo presentes no PDF. Aplica validação cruzada
+    final contra _CURSOS_IBIRUBA como rede de segurança adicional.
     """
     linhas: list[str] = []
     n_mantidas = 0
@@ -97,7 +127,7 @@ def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
 
                     if _RE_CAMPUS_IBIRUBA.search(texto):
                         ibiruba_ativo = True
-                    elif _RE_CAMPUS_OUTRO.search(texto):
+                    elif _RE_CAMPUS_OUTRO_TABELA.search(texto):
                         ibiruba_ativo = False
 
                     tabelas = page.extract_tables()
@@ -160,6 +190,21 @@ def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
                     print(f"⚠️  Aviso: erro ao processar página {i + 1} de {caminho_pdf}: {e}")
     except Exception as e:
         print(f"⚠️  Aviso: erro ao abrir {caminho_pdf} com pdfplumber: {e}")
+
+    # Opção C — validação cruzada: descarta linhas cujo curso não está na lista conhecida
+    # de Ibirubá, sinalizando possíveis falsos positivos do detector de campus por regex.
+    _re_curso = re.compile(r"Curso:\s*(.+?)(?:\s*\||\s*$)")
+    linhas_ok: list[str] = []
+    for linha in linhas:
+        m = _re_curso.search(linha)
+        # Strip de marcadores de rodapé ('*', '**') antes de comparar com o frozenset
+        nome_curso = m.group(1).strip().rstrip("*").strip() if m else ""
+        if nome_curso and nome_curso not in _CURSOS_IBIRUBA:
+            print(f"   ⚠️  [AUDITORIA] Curso não reconhecido descartado: {nome_curso!r}")
+            n_descartadas += 1
+        else:
+            linhas_ok.append(linha)
+    linhas = linhas_ok
 
     nome = Path(caminho_pdf).name
     print(f"   📋 {nome}: {n_mantidas} tabela(s) Ibirubá mantida(s), "

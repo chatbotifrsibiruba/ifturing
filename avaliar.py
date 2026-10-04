@@ -51,11 +51,24 @@ from pathlib import Path
 from dotenv import load_dotenv
 from db import init_db, upsert_modelo, get_or_create_sessao, inserir_consulta
 
-load_dotenv()
+# Importa a lógica de retrieval de produção para garantir paridade com o chatbot.
+# top_k, filtro de cotas, hybrid retrieval de tabelas e cronograma, e o prompt
+# são os mesmos usados em nucleo.responder(). Resultados RAGAS assim refletem
+# o pipeline real, não uma configuração de avaliação separada.
+from nucleo import (
+    PASTA_CHROMA,
+    MODELO_EMB,
+    TOP_K,
+    _PADRAO_COTA,
+    _PADRAO_DATA_RECENTE,
+    _buscar_tabelas_por_keyword,
+    _buscar_cronograma_por_keyword,
+    perguntar_llm,
+    _OllamaOffline,
+    _MaritacaError,
+)
 
-OLLAMA_URL         = os.getenv("OLLAMA_URL", "http://localhost:11434")
-PASTA_CHROMA       = os.getenv("PASTA_CHROMA", "./chroma_data")
-MODELO_EMB         = "intfloat/multilingual-e5-base"
+load_dotenv()
 
 MARITACA_API_KEY   = os.getenv("MARITACA_API_KEY", "")
 MARITACA_BASE_URL  = os.getenv("MARITACA_BASE_URL", "https://chat.maritaca.ai/api")
@@ -90,62 +103,85 @@ def carregar_dataset(caminho: str, limite: int = None) -> list:
     return linhas
 
 
-# ── Pipeline de retrieval ────────────────────────────────────────────
+# ── Pipeline de retrieval (sem Streamlit — não usa st.cache_resource) ─
 def carregar_pipeline():
+    """Carrega o ChromaDocumentStore e pré-carrega chunks para hybrid retrieval.
+
+    Espelha o setup de nucleo.carregar_pipeline() sem a camada de cache do
+    Streamlit, para que avaliar.py possa rodar como script standalone.
+    """
     from haystack import Pipeline
     from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersTextEmbedder
     from haystack_integrations.document_stores.chroma import ChromaDocumentStore
     from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
 
     document_store = ChromaDocumentStore(collection_name="ifturing", persist_path=PASTA_CHROMA)
+    n_chunks = document_store.count_documents()
+    print(f"[setup] {n_chunks} chunks no índice ChromaDB")
+
+    todos = document_store.filter_documents()
+    tabela_docs = [d for d in todos if (d.meta or {}).get("tipo") == "tabela"]
+    cronograma_docs = [
+        d for d in todos
+        if (d.meta or {}).get("tipo") != "tabela"
+        and (
+            "cronograma" in (d.content or "").lower()
+            or len(_PADRAO_DATA_RECENTE.findall(d.content or "")) >= 3
+        )
+    ]
+    print(f"[setup] {len(tabela_docs)} chunks de tabela pré-carregados")
+    print(f"[setup] {len(cronograma_docs)} chunks de cronograma pré-carregados")
+
     pipeline = Pipeline()
     pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model=MODELO_EMB))
-    pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=document_store, top_k=5))
+    pipeline.add_component(
+        "retriever",
+        ChromaEmbeddingRetriever(document_store=document_store, top_k=TOP_K),
+    )
     pipeline.connect("embedder.embedding", "retriever.query_embedding")
 
-    return pipeline
+    return pipeline, tabela_docs, cronograma_docs
 
 
-# ── Chamada ao modelo local (Ollama) ─────────────────────────────────
-def chamar_ollama(prompt: str, modelo: str) -> dict:
-    import requests
-    t0 = time.perf_counter()
-    r = requests.post(
-        f"{OLLAMA_URL}/api/generate",
-        json={
-            "model": modelo,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.3, "num_predict": 1024},
-        },
-        timeout=300,
-    )
-    r.raise_for_status()
-    d = r.json()
-    tempo = time.perf_counter() - t0
-    return {
-        "texto": d.get("response", ""),
-        "tokens_entrada": d.get("prompt_eval_count", 0),
-        "tokens_saida": d.get("eval_count", 0),
-        "tempo_llm_s": round(tempo, 3),
-    }
+# ── Retrieval idêntico ao pipeline de produção ───────────────────────
+def recuperar_contexto(pipeline, tabela_docs: list, cronograma_docs: list, pergunta: str) -> tuple[str, list]:
+    """Executa as mesmas etapas de retrieval de nucleo.responder().
 
-
-PROMPT_TEMPLATE = """Você é um assistente especializado nos documentos relacionados ao processo seletivo do IFRS.
-Responda à pergunta abaixo usando APENAS o contexto fornecido.
-Se a resposta não estiver no contexto, diga "Não encontrei essa informação nos documentos."
-
-Contexto:
-{contexto}
-
-Pergunta: {pergunta}
-Resposta:"""
-
-
-def responder(pipeline, pergunta: str, modelo: str) -> dict:
-    t0 = time.perf_counter()
+    Retorna (contexto, docs) onde contexto é a string passada ao LLM e
+    docs é a lista de Document para métricas de retrieval.
+    """
     resultado = pipeline.run({"embedder": {"text": pergunta}})
     docs = resultado["retriever"]["documents"]
+
+    # Filtro de cotas (igual a nucleo.responder)
+    docs = [
+        d for d in docs
+        if (d.meta or {}).get("tipo") == "tabela" or not _PADRAO_COTA.search(d.content or "")
+    ]
+
+    # Hybrid retrieval: tabelas
+    docs_tabela_extra = _buscar_tabelas_por_keyword(pergunta, tabela_docs, docs)
+    if docs_tabela_extra:
+        docs_tabela_ja   = [d for d in docs if (d.meta or {}).get("tipo") == "tabela"]
+        docs_texto_final = [d for d in docs if (d.meta or {}).get("tipo") != "tabela"][:6]
+        docs = docs_tabela_ja + docs_tabela_extra + docs_texto_final
+
+    # Hybrid retrieval: cronograma
+    docs_crono_extra = _buscar_cronograma_por_keyword(pergunta, cronograma_docs, docs)
+    if docs_crono_extra:
+        docs = docs_crono_extra + docs
+
+    if not docs:
+        return "", []
+
+    contexto = "\n\n---\n\n".join(d.content for d in docs)
+    return contexto, docs
+
+
+# ── Responder usando o pipeline de produção ──────────────────────────
+def responder(pipeline, tabela_docs: list, cronograma_docs: list, pergunta: str, modelo_cfg: dict) -> dict:
+    t0 = time.perf_counter()
+    contexto, docs = recuperar_contexto(pipeline, tabela_docs, cronograma_docs, pergunta)
     t_retrieval = time.perf_counter() - t0
 
     if not docs:
@@ -158,16 +194,24 @@ def responder(pipeline, pergunta: str, modelo: str) -> dict:
             "tokens_saida": 0,
         }
 
-    contexto = "\n\n---\n\n".join([d.content for d in docs])
-    prompt = PROMPT_TEMPLATE.format(contexto=contexto, pergunta=pergunta)
-
-    r = chamar_ollama(prompt, modelo)
+    t1 = time.perf_counter()
+    try:
+        r = perguntar_llm(pergunta, contexto, modelo_cfg)
+    except (_OllamaOffline, _MaritacaError) as exc:
+        return {
+            "resposta": f"[ERRO: {exc}]",
+            "contexto": contexto,
+            "tempo_retrieval_s": round(t_retrieval, 3),
+            "tempo_llm_s": round(time.perf_counter() - t1, 3),
+            "tokens_entrada": 0,
+            "tokens_saida": 0,
+        }
 
     return {
         "resposta": r["texto"],
         "contexto": contexto,
         "tempo_retrieval_s": round(t_retrieval, 3),
-        "tempo_llm_s": r["tempo_llm_s"],
+        "tempo_llm_s": r.get("tempo_geracao_s", round(time.perf_counter() - t1, 3)),
         "tokens_entrada": r["tokens_entrada"],
         "tokens_saida": r["tokens_saida"],
     }
@@ -326,6 +370,8 @@ def main():
     parser.add_argument("--saida",   default="relatorio_ragas.csv")
     args = parser.parse_args()
 
+    modelo_cfg = {"tipo": "ollama", "modelo": args.modelo}
+
     print(f"\n🌿 Branch/config: {args.branch}")
     print(f"🤖 Modelo avaliado: {args.modelo} (ollama)")
 
@@ -341,7 +387,7 @@ def main():
     dados = carregar_dataset(args.dataset, args.limite)
     print(f"📋 {len(dados)} perguntas carregadas do Golden Dataset\n")
 
-    pipeline = carregar_pipeline()
+    pipeline, tabela_docs, cronograma_docs = carregar_pipeline()
 
     perguntas, respostas, contextos, resp_esperadas = [], [], [], []
     linhas_brutas = []
@@ -352,7 +398,7 @@ def main():
         print(f"  ⏳ [{i}/{len(dados)}] {pergunta[:55]}...")
 
         try:
-            r = responder(pipeline, pergunta, args.modelo)
+            r = responder(pipeline, tabela_docs, cronograma_docs, pergunta, modelo_cfg)
         except Exception as e:
             print(f"     ❌ erro: {e}")
             r = {"resposta": "", "contexto": "", "tempo_retrieval_s": 0, "tempo_llm_s": 0,
