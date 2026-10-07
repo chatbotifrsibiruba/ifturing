@@ -418,9 +418,13 @@ with st.sidebar:
         st.markdown("## ⚙️ Configuração")
         st.markdown("---")
         _modelos = listar_modelos_ollama()
+        _idx_padrao = next(
+            (i for i, v in enumerate(_modelos.values()) if v.get("modelo") == _MODELO_PADRAO_ID), 0
+        )
         modelo_selecionado = st.selectbox(
             "Modelo de IA",
             options=list(_modelos.keys()),
+            index=_idx_padrao,
             help="Troque o modelo para comparar respostas no artigo"
         )
         cfg = _modelos[modelo_selecionado]

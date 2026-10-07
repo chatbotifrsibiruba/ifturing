@@ -3,7 +3,7 @@ import datetime
 import streamlit as st
 from dotenv import load_dotenv
 from db import init_db, get_or_create_sessao, inserir_feedback
-from nucleo import MODELOS, listar_modelos_ollama, registrar_modelos, carregar_pipeline, responder, salvar_consulta_no_banco, formatar_metricas
+from nucleo import MODELOS, _MODELO_PADRAO_ID, listar_modelos_ollama, registrar_modelos, carregar_pipeline, responder, salvar_consulta_no_banco, formatar_metricas
 
 load_dotenv()
 init_db()
@@ -33,9 +33,13 @@ with st.sidebar:
     st.markdown("## ⚙️ Configuração")
     st.markdown("---")
     _modelos_disponiveis = listar_modelos_ollama()
+    _idx_padrao = next(
+        (i for i, v in enumerate(_modelos_disponiveis.values()) if v.get("modelo") == _MODELO_PADRAO_ID), 0
+    )
     modelo_selecionado = st.selectbox(
         "Modelo de IA",
         options=list(_modelos_disponiveis.keys()),
+        index=_idx_padrao,
         help="Troque o modelo para comparar respostas",
     )
     cfg = _modelos_disponiveis[modelo_selecionado]

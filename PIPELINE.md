@@ -234,6 +234,8 @@ Resposta + métricas → UI + ifturing.db (SQLite)
 | `_buscar_tabelas_por_keyword` | Limite hard de 20 tabelas pode silenciosamente truncar o contexto em perguntas amplas |
 | `.env.example` | Ainda referencia `PASTA_FAISS` (obsoleto) em vez de `PASTA_CHROMA` |
 | `carregar_pipeline()` | Retorna tupla de 4 elementos, mas `app_publico.py:540` e `admin_page.py:70` desempacotam com `pipeline, n_chunks, *_` — correto, mas `n_chunks` deveria refletir o estado **após** a reindexação, não só ao carregar (o valor fica em cache `st.cache_resource` indefinidamente) |
+| Embedder de consulta (`nucleo.py`) | CUDA OOM: GPU compartilhada com outros processos; sem `device="cpu"` o `SentenceTransformersTextEmbedder` pode tentar alocar na GPU e falhar → **mitigado** (ver R8) |
+| Modelos pequenos (0.6B) | Qwen3 0.6B lista datas sem rótulo ou duplicadas em perguntas de cronograma — **em investigação** |
 
 ---
 
@@ -275,6 +277,10 @@ em produção — especialmente as datas, que podem mudar de versão para versã
 | B06 | Quantas vagas tem a Licenciatura em Matemática? | 30 vagas |
 | B07 | Qual é a duração do Bacharelado em Engenharia Mecânica? | 10 semestres |
 | B08 | Quais cursos superiores são oferecidos no período noturno? | Ciência da Computação, Engenharia Mecânica, Matemática (3 cursos) |
+| B09 | Quais são os cursos superiores do campus Ibirubá? | Agronomia, Ciência da Computação, Engenharia Mecânica, Matemática (4 cursos) |
+| B10 | Qual é a duração do Bacharelado em Ciência da Computação e da Licenciatura em Matemática? | Ciência da Computação: 9 semestres; Matemática: 8 semestres |
+| B11 | Agronomia e Engenharia Mecânica são bacharelados? | Sim, ambos são Bacharelados |
+| B12 | Quantos cursos superiores existem no campus Ibirubá? | 4 cursos superiores |
 
 ---
 
@@ -337,6 +343,7 @@ em produção — especialmente as datas, que podem mudar de versão para versã
 | R5 | `_RE_CAMPUS_OUTRO` com `[:(]` causava falso positivo em texto inline | ✅ Corrigido | `indexar.py`: `_RE_CAMPUS_OUTRO` (extrator de texto) agora exige só `:`. Criada `_RE_CAMPUS_OUTRO_TABELA` com `{0,2}` palavras e `[:(]` para suportar os dois formatos de cabeçalho de annexo presentes no PDF. |
 | R6 | Extrator de tabelas capturava 54 chunks de outros campi | ✅ Corrigido | Consequência direta de R5. Após a correção, apenas as 4 páginas de annexo do Campus Ibirubá são mantidas, produzindo os 9 chunks esperados (Técnicos + Superiores). |
 | R7 | Whitelist `_CURSOS_IBIRUBA` incompleta (apenas Técnicos) | ✅ Corrigido | O filtro de auditoria (Opção C) detectou automaticamente 4 cursos superiores legítimos de Ibirubá (Bacharelado em Agronomia, Ciência da Computação, Engenharia Mecânica; Licenciatura em Matemática) que não estavam na whitelist. Adicionados ao frozenset. |
+| R8 | CUDA OOM no embedder de consulta | ✅ Corrigido | `SentenceTransformersTextEmbedder` em `nucleo.carregar_pipeline()` agora lê a variável de ambiente `EMBEDDER_DEVICE` (default `"cpu"`), evitando alocação na GPU compartilhada. Indexador (`SentenceTransformersDocumentEmbedder` em `indexar.py`) não foi alterado — usa classe diferente e roda em contexto exclusivo. |
 
 ---
 

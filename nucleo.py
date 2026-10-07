@@ -6,11 +6,13 @@ Sem layout ou CSS do Streamlit.
 import os
 import re
 import time
+import traceback
 import psutil
 import requests
 import streamlit as st
 from pathlib import Path
 from haystack import Pipeline
+from haystack.utils import ComponentDevice
 from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersTextEmbedder
 from haystack_integrations.document_stores.chroma import ChromaDocumentStore
 from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
@@ -23,8 +25,9 @@ PASTA_CHROMA   = os.getenv("PASTA_CHROMA",  "./chroma_data")
 OLLAMA_URL     = os.getenv("OLLAMA_URL",    "http://localhost:11434")
 MODELO_OLLAMA  = os.getenv("MODELO_OLLAMA", "llama3:latest")
 MARITACA_URL   = "https://chat.maritaca.ai/api/chat/completions"
-MODELO_EMB     = "intfloat/multilingual-e5-base"
-TOP_K          = 10
+MODELO_EMB      = "intfloat/multilingual-e5-base"
+TOP_K           = 10
+EMBEDDER_DEVICE = os.getenv("EMBEDDER_DEVICE", "cpu")
 
 # Detecta chunks que descrevem distribuição de cotas (ex: "C1:", "C10:")
 _PADRAO_COTA = re.compile(r"C\d{1,2}:")
@@ -318,7 +321,13 @@ def carregar_pipeline():
     print(f"[setup] {len(cronograma_docs)} chunks de cronograma pré-carregados para retrieval híbrido")
 
     pipeline = Pipeline()
-    pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model=MODELO_EMB))
+    pipeline.add_component(
+        "embedder",
+        SentenceTransformersTextEmbedder(
+            model=MODELO_EMB,
+            device=ComponentDevice.from_str(EMBEDDER_DEVICE),
+        ),
+    )
     pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=document_store, top_k=TOP_K))
     pipeline.connect("embedder.embedding", "retriever.query_embedding")
     return pipeline, n_chunks, tabela_docs, cronograma_docs
@@ -396,7 +405,11 @@ def chamar_ollama(prompt: str, modelo: str) -> dict:
 def chamar_maritaca(prompt: str, modelo: str) -> dict:
     api_key = os.getenv("MARITACA_API_KEY", "").strip()
     if not api_key:
-        raise _MaritacaError("MARITACA_API_KEY não configurada no ambiente")
+        return {
+            "texto": "Modelo Sabiá-4 indisponível: chave de API não configurada.",
+            "tokens_entrada": 0, "tokens_saida": 0, "tokens_total": 0,
+            "tempo_carga_s": 0.0, "tempo_prefill_s": 0.0, "tempo_geracao_s": 0.0,
+        }
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -467,156 +480,170 @@ Pergunta: {pergunta}"""
     return chamar_ollama(prompt, modelo_cfg["modelo"])
 
 
-def responder(pergunta: str, modelo_cfg: dict) -> dict:
-    pipeline, _, tabela_docs, cronograma_docs = carregar_pipeline()
-    if pipeline is None:
-        raise RuntimeError("Pipeline não carregado — execute indexar.py primeiro.")
-
-    proc = psutil.Process()
-    ram_antes = proc.memory_info().rss / 1024**2
-    t_inicio = time.perf_counter()
-
-    print(f"\n[timing] ═══ início | modelo={modelo_cfg['modelo']} | pergunta={len(pergunta)} chars ═══")
-
-    # 1. Embedding da query + busca vetorial no ChromaDocumentStore
-    t0 = time.perf_counter()
-    resultado = pipeline.run({"embedder": {"text": pergunta}})
-    docs = resultado["retriever"]["documents"]
-    t_retrieval = time.perf_counter() - t0
-    print(f"[timing] embed+retrieve:      {t_retrieval:.3f}s  ({len(docs)} docs recuperados)")
-
-    # Pós-filtro: descarta chunks de texto que descrevem distribuição de cotas
-    docs_antes = len(docs)
-    docs = [
-        d for d in docs
-        if (d.meta or {}).get("tipo") == "tabela" or not _PADRAO_COTA.search(d.content or "")
-    ]
-    n_removidos = docs_antes - len(docs)
-    if n_removidos:
-        print(f"[timing] pos_filtro_cota:     {n_removidos} chunk(s) removido(s)")
-
-    # Retrieval híbrido: injeta chunks de tabela relevantes por palavra-chave
-    t0_hib = time.perf_counter()
-    docs_tabela_extra = _buscar_tabelas_por_keyword(pergunta, tabela_docs, docs)
-    if docs_tabela_extra:
-        # Tabelas primeiro → LLM vê dados estruturados antes do texto livre
-        docs_tabela_ja  = [d for d in docs if (d.meta or {}).get("tipo") == "tabela"]
-        docs_texto_final = [d for d in docs if (d.meta or {}).get("tipo") != "tabela"]
-        # Quando há injeção de tabelas, reduz chunks de texto para 6 para preservar
-        # espaço de geração sem sacrificar o contexto estruturado mais confiável
-        docs_texto_final = docs_texto_final[:6]
-        docs = docs_tabela_ja + docs_tabela_extra + docs_texto_final
-        n_tab = len(docs_tabela_ja) + len(docs_tabela_extra)
-        print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
-              f"({len(docs_tabela_extra)} tabelas injetadas → "
-              f"{n_tab} tab + {len(docs_texto_final)} texto = {len(docs)} docs)")
-    else:
-        print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
-              f"(0 injetados)")
-
-    # Retrieval híbrido: injeta chunks de cronograma quando a pergunta menciona datas/prazos
-    t0_crono = time.perf_counter()
-    docs_crono_extra = _buscar_cronograma_por_keyword(pergunta, cronograma_docs, docs)
-    if docs_crono_extra:
-        # Cronograma no início → LLM lê as datas antes do restante do contexto
-        docs = docs_crono_extra + docs
-        print(f"[timing] hibrido_cronograma:  {time.perf_counter() - t0_crono:.6f}s  "
-              f"({len(docs_crono_extra)} cronograma injetados, {len(docs)} docs total)")
-    else:
-        print(f"[timing] hibrido_cronograma:  {time.perf_counter() - t0_crono:.6f}s  (0 injetados)")
-
-    if not docs:
-        t_total = time.perf_counter() - t_inicio
-        print(f"[timing] TOTAL (sem docs):    {t_total:.3f}s")
-        return {
-            "resposta": "⚠️ Nenhum trecho relevante encontrado nos documentos.",
-            "tempo_total_s": round(t_total, 3),
-            "tempo_retrieval_s": round(t_retrieval, 3), "tempo_llm_s": 0.0,
-            "docs_recuperados": 0, "score_max": 0.0, "score_medio": 0.0,
-            "chars_contexto": 0, "tokens_entrada": 0, "tokens_saida": 0,
-            "tokens_total": 0, "tokens_por_s": 0.0, "chars_resposta": 0,
-            "ram_delta_mb": 0.0, "nao_encontrado": True, "erro": False,
-            "tempo_carga_s": 0.0, "tempo_prefill_s": 0.0, "tempo_geracao_s": 0.0,
-        }
-
-    # 2. Montagem do contexto (join dos documentos recuperados)
-    t0 = time.perf_counter()
-    scores = [d.score for d in docs if d.score is not None]
-    contexto = "\n\n---\n\n".join([d.content for d in docs])
-    t_contexto = time.perf_counter() - t0
-    n_tab_ctx = sum(1 for d in docs if (d.meta or {}).get("tipo") == "tabela")
-    print(f"[timing] montagem_contexto:   {t_contexto:.6f}s  "
-          f"({len(contexto)} chars | {n_tab_ctx} tabela + {len(docs)-n_tab_ctx} texto)")
-
-    if _DEBUG_CONTEXTO:
-        print("\n" + "─" * 72)
-        print(f"[DEBUG_CONTEXTO] {len(docs)} docs no contexto:")
-        for i, d in enumerate(docs, 1):
-            tipo = (d.meta or {}).get("tipo", "texto")
-            src  = (d.meta or {}).get("source", (d.meta or {}).get("file_path", "?"))
-            print(f"  [{i:02d}] tipo={tipo}  src={src}")
-            print(f"        {(d.content or '')!r}")
-        print("─" * 72 + "\n")
-
-    # 3. LLM: montagem do prompt + chamada ao Ollama (detalhado dentro de perguntar_llm/chamar_ollama)
-    t1 = time.perf_counter()
+def responder(pergunta: str, modelo_cfg: dict, propagar_erros: bool = False) -> dict:
     try:
-        r = perguntar_llm(pergunta, contexto, modelo_cfg)
-    except (_OllamaOffline, _MaritacaError) as exc:
-        t_llm = time.perf_counter() - t1
-        t_total = time.perf_counter() - t_inicio
-        is_maritaca = isinstance(exc, _MaritacaError)
-        tag = "Maritaca" if is_maritaca else "Ollama"
-        print(f"[timing] llm_total:           {t_llm:.3f}s  (FALHA — {tag} erro: {exc})")
-        print(f"[timing] TOTAL:               {t_total:.3f}s")
-        if is_maritaca:
-            msg_erro = f"⚠️ Erro ao consultar Maritaca: {exc}."
+        pipeline, _, tabela_docs, cronograma_docs = carregar_pipeline()
+        if pipeline is None:
+            raise RuntimeError("Pipeline não carregado — execute indexar.py primeiro.")
+
+        proc = psutil.Process()
+        ram_antes = proc.memory_info().rss / 1024**2
+        t_inicio = time.perf_counter()
+
+        print(f"\n[timing] ═══ início | modelo={modelo_cfg['modelo']} | pergunta={len(pergunta)} chars ═══")
+
+        # 1. Embedding da query + busca vetorial no ChromaDocumentStore
+        t0 = time.perf_counter()
+        resultado = pipeline.run({"embedder": {"text": pergunta}})
+        docs = resultado["retriever"]["documents"]
+        t_retrieval = time.perf_counter() - t0
+        print(f"[timing] embed+retrieve:      {t_retrieval:.3f}s  ({len(docs)} docs recuperados)")
+
+        # Pós-filtro: descarta chunks de texto que descrevem distribuição de cotas
+        docs_antes = len(docs)
+        docs = [
+            d for d in docs
+            if (d.meta or {}).get("tipo") == "tabela" or not _PADRAO_COTA.search(d.content or "")
+        ]
+        n_removidos = docs_antes - len(docs)
+        if n_removidos:
+            print(f"[timing] pos_filtro_cota:     {n_removidos} chunk(s) removido(s)")
+
+        # Retrieval híbrido: injeta chunks de tabela relevantes por palavra-chave
+        t0_hib = time.perf_counter()
+        docs_tabela_extra = _buscar_tabelas_por_keyword(pergunta, tabela_docs, docs)
+        if docs_tabela_extra:
+            # Tabelas primeiro → LLM vê dados estruturados antes do texto livre
+            docs_tabela_ja  = [d for d in docs if (d.meta or {}).get("tipo") == "tabela"]
+            docs_texto_final = [d for d in docs if (d.meta or {}).get("tipo") != "tabela"]
+            # Quando há injeção de tabelas, reduz chunks de texto para 6 para preservar
+            # espaço de geração sem sacrificar o contexto estruturado mais confiável
+            docs_texto_final = docs_texto_final[:6]
+            docs = docs_tabela_ja + docs_tabela_extra + docs_texto_final
+            n_tab = len(docs_tabela_ja) + len(docs_tabela_extra)
+            print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
+                  f"({len(docs_tabela_extra)} tabelas injetadas → "
+                  f"{n_tab} tab + {len(docs_texto_final)} texto = {len(docs)} docs)")
         else:
-            msg_erro = _MSG_OLLAMA_OFFLINE
+            print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
+                  f"(0 injetados)")
+
+        # Retrieval híbrido: injeta chunks de cronograma quando a pergunta menciona datas/prazos
+        t0_crono = time.perf_counter()
+        docs_crono_extra = _buscar_cronograma_por_keyword(pergunta, cronograma_docs, docs)
+        if docs_crono_extra:
+            # Cronograma no início → LLM lê as datas antes do restante do contexto
+            docs = docs_crono_extra + docs
+            print(f"[timing] hibrido_cronograma:  {time.perf_counter() - t0_crono:.6f}s  "
+                  f"({len(docs_crono_extra)} cronograma injetados, {len(docs)} docs total)")
+        else:
+            print(f"[timing] hibrido_cronograma:  {time.perf_counter() - t0_crono:.6f}s  (0 injetados)")
+
+        if not docs:
+            t_total = time.perf_counter() - t_inicio
+            print(f"[timing] TOTAL (sem docs):    {t_total:.3f}s")
+            return {
+                "resposta": "⚠️ Nenhum trecho relevante encontrado nos documentos.",
+                "tempo_total_s": round(t_total, 3),
+                "tempo_retrieval_s": round(t_retrieval, 3), "tempo_llm_s": 0.0,
+                "docs_recuperados": 0, "score_max": 0.0, "score_medio": 0.0,
+                "chars_contexto": 0, "tokens_entrada": 0, "tokens_saida": 0,
+                "tokens_total": 0, "tokens_por_s": 0.0, "chars_resposta": 0,
+                "ram_delta_mb": 0.0, "nao_encontrado": True, "erro": False,
+                "tempo_carga_s": 0.0, "tempo_prefill_s": 0.0, "tempo_geracao_s": 0.0,
+            }
+
+        # 2. Montagem do contexto (join dos documentos recuperados)
+        t0 = time.perf_counter()
+        scores = [d.score for d in docs if d.score is not None]
+        contexto = "\n\n---\n\n".join([d.content for d in docs])
+        t_contexto = time.perf_counter() - t0
+        n_tab_ctx = sum(1 for d in docs if (d.meta or {}).get("tipo") == "tabela")
+        print(f"[timing] montagem_contexto:   {t_contexto:.6f}s  "
+              f"({len(contexto)} chars | {n_tab_ctx} tabela + {len(docs)-n_tab_ctx} texto)")
+
+        if _DEBUG_CONTEXTO:
+            print("\n" + "─" * 72)
+            print(f"[DEBUG_CONTEXTO] {len(docs)} docs no contexto:")
+            for i, d in enumerate(docs, 1):
+                tipo = (d.meta or {}).get("tipo", "texto")
+                src  = (d.meta or {}).get("source", (d.meta or {}).get("file_path", "?"))
+                print(f"  [{i:02d}] tipo={tipo}  src={src}")
+                print(f"        {(d.content or '')!r}")
+            print("─" * 72 + "\n")
+
+        # 3. LLM: montagem do prompt + chamada ao Ollama (detalhado dentro de perguntar_llm/chamar_ollama)
+        t1 = time.perf_counter()
+        try:
+            r = perguntar_llm(pergunta, contexto, modelo_cfg)
+        except (_OllamaOffline, _MaritacaError) as exc:
+            t_llm = time.perf_counter() - t1
+            t_total = time.perf_counter() - t_inicio
+            is_maritaca = isinstance(exc, _MaritacaError)
+            tag = "Maritaca" if is_maritaca else "Ollama"
+            print(f"[timing] llm_total:           {t_llm:.3f}s  (FALHA — {tag} erro: {exc})")
+            print(f"[timing] TOTAL:               {t_total:.3f}s")
+            if is_maritaca:
+                msg_erro = f"⚠️ Erro ao consultar Maritaca: {exc}."
+            else:
+                msg_erro = _MSG_OLLAMA_OFFLINE
+            return {
+                "resposta": msg_erro,
+                "tempo_total_s": round(t_total, 3),
+                "tempo_retrieval_s": round(t_retrieval, 3), "tempo_llm_s": 0.0,
+                "docs_recuperados": len(docs),
+                "score_max": round(max(scores), 4) if scores else 0.0,
+                "score_medio": round(sum(scores) / len(scores), 4) if scores else 0.0,
+                "chars_contexto": len(contexto), "tokens_entrada": 0, "tokens_saida": 0,
+                "tokens_total": 0, "tokens_por_s": 0.0, "chars_resposta": 0,
+                "ram_delta_mb": 0.0, "nao_encontrado": False, "erro": True,
+                "tempo_carga_s": 0.0, "tempo_prefill_s": 0.0, "tempo_geracao_s": 0.0,
+            }
+        t_llm = time.perf_counter() - t1
+        print(f"[timing] llm_total:           {t_llm:.3f}s")
+
+        t_total = time.perf_counter() - t_inicio
+        ram_depois = proc.memory_info().rss / 1024**2
+        texto = r["texto"]
+        tok_saida = r["tokens_saida"]
+
+        print(f"[timing] ram_delta:           {ram_depois - ram_antes:+.1f} MB")
+        print(f"[timing] TOTAL:               {t_total:.3f}s  ════════════════")
+
         return {
-            "resposta": msg_erro,
+            "resposta": texto,
             "tempo_total_s": round(t_total, 3),
-            "tempo_retrieval_s": round(t_retrieval, 3), "tempo_llm_s": 0.0,
+            "tempo_retrieval_s": round(t_retrieval, 3),
+            "tempo_llm_s": round(t_llm, 3),
+            "tempo_carga_s": r.get("tempo_carga_s", 0.0),
+            "tempo_prefill_s": r.get("tempo_prefill_s", 0.0),
+            "tempo_geracao_s": r.get("tempo_geracao_s", 0.0),
             "docs_recuperados": len(docs),
             "score_max": round(max(scores), 4) if scores else 0.0,
             "score_medio": round(sum(scores) / len(scores), 4) if scores else 0.0,
-            "chars_contexto": len(contexto), "tokens_entrada": 0, "tokens_saida": 0,
+            "chars_contexto": len(contexto),
+            "tokens_entrada": r["tokens_entrada"],
+            "tokens_saida": tok_saida,
+            "tokens_total": r["tokens_total"],
+            "tokens_por_s": round(tok_saida / t_llm, 2) if t_llm > 0 else 0.0,
+            "chars_resposta": len(texto),
+            "ram_delta_mb": round(ram_depois - ram_antes, 1),
+            "nao_encontrado": "não encontrei essa informação" in texto.lower(),
+            "erro": False,
+        }
+    except Exception:
+        if propagar_erros:
+            raise
+        traceback.print_exc()
+        return {
+            "resposta": "Ocorreu um erro temporário ao processar sua pergunta. Tente novamente em instantes.",
+            "tempo_total_s": 0.0, "tempo_retrieval_s": 0.0, "tempo_llm_s": 0.0,
+            "docs_recuperados": 0, "score_max": 0.0, "score_medio": 0.0,
+            "chars_contexto": 0, "tokens_entrada": 0, "tokens_saida": 0,
             "tokens_total": 0, "tokens_por_s": 0.0, "chars_resposta": 0,
             "ram_delta_mb": 0.0, "nao_encontrado": False, "erro": True,
             "tempo_carga_s": 0.0, "tempo_prefill_s": 0.0, "tempo_geracao_s": 0.0,
         }
-    t_llm = time.perf_counter() - t1
-    print(f"[timing] llm_total:           {t_llm:.3f}s")
-
-    t_total = time.perf_counter() - t_inicio
-    ram_depois = proc.memory_info().rss / 1024**2
-    texto = r["texto"]
-    tok_saida = r["tokens_saida"]
-
-    print(f"[timing] ram_delta:           {ram_depois - ram_antes:+.1f} MB")
-    print(f"[timing] TOTAL:               {t_total:.3f}s  ════════════════")
-
-    return {
-        "resposta": texto,
-        "tempo_total_s": round(t_total, 3),
-        "tempo_retrieval_s": round(t_retrieval, 3),
-        "tempo_llm_s": round(t_llm, 3),
-        "tempo_carga_s": r.get("tempo_carga_s", 0.0),
-        "tempo_prefill_s": r.get("tempo_prefill_s", 0.0),
-        "tempo_geracao_s": r.get("tempo_geracao_s", 0.0),
-        "docs_recuperados": len(docs),
-        "score_max": round(max(scores), 4) if scores else 0.0,
-        "score_medio": round(sum(scores) / len(scores), 4) if scores else 0.0,
-        "chars_contexto": len(contexto),
-        "tokens_entrada": r["tokens_entrada"],
-        "tokens_saida": tok_saida,
-        "tokens_total": r["tokens_total"],
-        "tokens_por_s": round(tok_saida / t_llm, 2) if t_llm > 0 else 0.0,
-        "chars_resposta": len(texto),
-        "ram_delta_mb": round(ram_depois - ram_antes, 1),
-        "nao_encontrado": "não encontrei essa informação" in texto.lower(),
-        "erro": False,
-    }
 
 
 def salvar_consulta_no_banco(sessao_id: int, modelo_cfg: dict, pergunta: str, m: dict) -> int | None:

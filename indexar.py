@@ -117,7 +117,8 @@ def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
     """
     linhas: list[str] = []
     n_mantidas = 0
-    n_descartadas = 0
+    n_descartadas = 0        # tabelas de outros campi
+    n_descartadas_curso = 0  # linhas fora da whitelist _CURSOS_IBIRUBA
     ibiruba_ativo = False
     try:
         with pdfplumber.open(caminho_pdf) as pdf:
@@ -201,7 +202,7 @@ def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
         nome_curso = m.group(1).strip().rstrip("*").strip() if m else ""
         if nome_curso and nome_curso not in _CURSOS_IBIRUBA:
             print(f"   ⚠️  [AUDITORIA] Curso não reconhecido descartado: {nome_curso!r}")
-            n_descartadas += 1
+            n_descartadas_curso += 1
         else:
             linhas_ok.append(linha)
     linhas = linhas_ok
@@ -209,6 +210,8 @@ def extrair_tabelas_como_texto(caminho_pdf: str) -> list[str]:
     nome = Path(caminho_pdf).name
     print(f"   📋 {nome}: {n_mantidas} tabela(s) Ibirubá mantida(s), "
           f"{n_descartadas} de outros campi descartada(s)")
+    if n_descartadas_curso:
+        print(f"   📋 {nome}: {n_descartadas_curso} linha(s) de tabela descartada(s) por whitelist de cursos")
     return linhas
 
 
@@ -294,9 +297,9 @@ def indexar_documentos(
         c for c in chunks_texto_raw
         if not _PADRAO_COTA.search(c.content or "")
     ]
-    n_descartados = len(chunks_texto_raw) - len(chunks_texto)
-    if n_descartados:
-        print(f"   🗑️  {n_descartados} chunk(s) de texto descartado(s) (parágrafos de cotas)")
+    n_descartadas_cota = len(chunks_texto_raw) - len(chunks_texto)
+    if n_descartadas_cota:
+        print(f"   🗑️  {n_descartadas_cota} chunk(s) de texto descartado(s) por parágrafo de cota")
 
     # Documentos de tabela: apenas limpar, cada linha já é um chunk final
     cleaned_table = cleaner.run(documents=table_docs)
