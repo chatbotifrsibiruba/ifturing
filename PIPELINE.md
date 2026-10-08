@@ -252,16 +252,16 @@ em produção — especialmente as datas, que podem mudar de versão para versã
 
 ### Bloco A — Cursos técnicos
 
-| # | Pergunta | Resposta esperada (palavras-chave obrigatórias) |
-|---|---|---|
-| A01 | Quais são os cursos técnicos disponíveis no campus Ibirubá? | Agropecuária, Informática, Mecânica, Eletrotécnica (4 nomes distintos) |
-| A02 | Quais cursos técnicos são oferecidos no turno da manhã? | Agropecuária, Informática, Mecânica (Manhã e Tarde) |
-| A03 | Quais cursos técnicos são oferecidos no turno da noite? | Eletrotécnica, Mecânica (Noite) |
-| A04 | Quantas vagas tem o curso Técnico em Agropecuária? | 32 vagas |
-| A05 | Qual é a duração do curso Técnico em Informática? | 3 semestres |
-| A06 | O campus oferece Técnico em Eletrotécnica? Qual é o turno e quantas vagas? | Sim, turno Noite, 30 vagas, 4 semestres |
-| A07 | Quantas vagas têm os cursos técnicos noturnos no total? | 60 vagas (Eletrotécnica 30 + Mecânica noite 30) |
-| A08 | O Técnico em Mecânica é oferecido em quantos turnos? | Dois turnos: Manhã e Tarde (3 sem, 32 vagas) e Noite (4 sem, 30 vagas) |
+| # | Pergunta | Resposta esperada (palavras-chave obrigatórias) | NAO DEVE CONTER |
+|---|---|---|---|
+| A01 | Quais são os cursos técnicos disponíveis no campus Ibirubá? | Agropecuária, Informática, Mecânica, Eletrotécnica (4 nomes distintos) | Geoprocessamento, Edificações, Administração, Agroindústria, Segurança do Trabalho |
+| A02 | Quais cursos técnicos são oferecidos no turno da manhã? | Agropecuária, Informática, Mecânica (Manhã e Tarde) | |
+| A03 | Quais cursos técnicos são oferecidos no turno da noite? | Eletrotécnica, Mecânica (Noite) | |
+| A04 | Quantas vagas tem o curso Técnico em Agropecuária? | 32 | 130, 40 |
+| A05 | Qual é a duração do curso Técnico em Informática? | 3 | |
+| A06 | O campus oferece Técnico em Eletrotécnica? Qual é o turno e quantas vagas? | Sim, turno Noite, 30, 4 | |
+| A07 | Quantas vagas têm os cursos técnicos noturnos no total? | 60 | |
+| A08 | O Técnico em Mecânica é oferecido em quantos turnos? | Dois turnos, Manhã, Tarde, Noite, 32, 30 | |
 
 ---
 
@@ -310,12 +310,15 @@ em produção — especialmente as datas, que podem mudar de versão para versã
 
 ### Casos de borda críticos (verificação de qualidade)
 
-| # | Pergunta | O que verificar |
-|---|---|---|
-| E01 | Quantos cursos técnicos existem no total? | Deve dizer **4 nomes distintos** (não 5 entradas), ou distinguir claramente que Mecânica aparece em dois turnos |
-| E02 | Liste todos os cursos do campus Ibirubá | Deve listar os 4 técnicos + 4 superiores sem repetir nenhum e sem misturar categorias |
-| E03 | Quais documentos preciso para me inscrever? | Deve responder com base no edital; **não deve** listar documentos de outros editais misturados |
-| E04 | Quais são as datas do processo seletivo? (sem especificar ano) | Deve responder preferencialmente com as datas de 2026/2027 (edital mais recente); **não deve** misturar com datas de 2025 (edital 78-2025) |
+> **Coluna "O que verificar":** para E01 usada também como palavras-chave do avaliador automático.
+> Para E02–E04 contém descrição para revisão humana (avaliador retorna REVISAR por ausência de keywords simples).
+
+| # | Pergunta | O que verificar (auto-avaliação: palavras-chave) | NAO DEVE CONTER |
+|---|---|---|---|
+| E01 | Quantos cursos técnicos existem no total? | 4 quatro | Geoprocessamento, Edificações, Administração, Agroindústria, Segurança do Trabalho |
+| E02 | Liste todos os cursos do campus Ibirubá | Agropecuária, Informática, Mecânica, Eletrotécnica, Agronomia, Matemática | |
+| E03 | Quais documentos preciso para me inscrever? | documento, identidade, cpf | |
+| E04 | Quais são as datas do processo seletivo? (sem especificar ano) | 2026, 2027 | 2025 |
 
 ---
 

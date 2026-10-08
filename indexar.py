@@ -26,17 +26,47 @@ _LABELS = ("Curso", "Turnos", "Duração (semestres)", "Total de Vagas")
 # Cabeçalho de seção Ibirubá: "Campus Ibirubá:" (corpo/Annexo 2) ou "Campus Ibirubá (" (Annexo 1)
 _RE_CAMPUS_IBIRUBA = re.compile(r"campus\s+ibirub[aá]\s*[:(]", re.IGNORECASE)
 
-# Para páginas de TEXTO: seções do corpo usam "Campus X:" — exige ':' para não casar com
-# referências inline como "campus Osório é na modalidade de … (EaD)" onde o '(' do '(EaD)'
-# ativaria erroneamente a troca de estado e descartaria o cronograma geral.
-_RE_CAMPUS_OUTRO = re.compile(r"campus\s+\w+(?:\s+\w+)*\s*:", re.IGNORECASE)
+# Nomes dos campi do IFRS que NÃO são Ibirubá — usados nos regex abaixo.
+# Usar nomes específicos (em vez de \w+ genérico) evita falsos positivos como
+# "campus Ibirubá (RS)", "campus Osório é na modalidade EaD (EaD)", e
+# "Instituto Federal...do Rio Grande do Sul".
+_OUTROS_CAMPI_NOMES = (
+    r"alvorada|bento\s+gon[cç]alves|canoas|caxias\s+do\s+sul|erechim|"
+    r"farroupilha|feliz|os[oó]rio|porto\s+alegre|restinga|rio\s+grande|"
+    r"rolante|sert[aã]o|vacaria|veran[oó]polis|viam[aã]o"
+)
 
-# Para páginas de TABELA: o PDF tem dois formatos de cabeçalho de annexo —
-#   Annexo 1: "Campus Farroupilha (a descrição das vagas está após a tabela)"  → usa '('
-#   Annexo 2: "Campus Farroupilha: A descrição da tabela encontra-se ao final" → usa ':'
-# Limita o nome do campus a no máximo 3 palavras para não casar com o falso positivo
-# "campus Osório é na modalidade de … (EaD)" (5+ palavras entre o nome e o '(').
-_RE_CAMPUS_OUTRO_TABELA = re.compile(r"campus\s+\w+(?:\s+\w+){0,2}\s*[:(]", re.IGNORECASE)
+# Para páginas de TEXTO: detecta cabeçalho de seção de outro campus nos dois formatos —
+#   "Campus Farroupilha: A descrição da tabela..."  → usa ':'
+#   "Campus Restinga (a descrição das vagas..."     → usa '('
+# Usar nomes específicos evita os falsos positivos que o padrão genérico \w+ causava.
+_RE_CAMPUS_OUTRO_TEXTO = re.compile(
+    rf"campus\s+(?:{_OUTROS_CAMPI_NOMES})\s*[:(]",
+    re.IGNORECASE,
+)
+
+# Para páginas de TABELA: mantido com o mesmo comportamento anterior (nomes específicos
+# garantem a mesma precisão que _RE_CAMPUS_OUTRO_TEXTO).
+_RE_CAMPUS_OUTRO_TABELA = re.compile(
+    rf"campus\s+(?:{_OUTROS_CAMPI_NOMES})\s*[:(]",
+    re.IGNORECASE,
+)
+
+# Cabeçalho institucional repetido em todas as páginas do PDF.
+# Removido do texto extraído para não poluir os chunks.
+_RE_CABECALHO_PAGINA = re.compile(
+    r"MINIST[EÉ]RIO\s+DA\s+EDUCA[CÇ][AÃ]O\s*\n"
+    r"Secretaria\s+de\s+Educa[cç][aã]o\s+Profissional\s+e\s+Tecnol[oó]gica\s*\n"
+    r"Instituto\s+Federal\s+de\s+Educa[cç][aã]o[^\n]*\n"
+    r"(?:Gabinete\s+do\s+Reitor[^\n]*\n?)?",
+    re.IGNORECASE,
+)
+
+# Nomes de outros campi para auditoria pós-indexação (busca inline, sem prefixo "campus").
+_RE_OUTROS_NOMES_AUDIT = re.compile(
+    rf"\b(?:{_OUTROS_CAMPI_NOMES})\b",
+    re.IGNORECASE,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ATENÇÃO: atualizar este conjunto a cada novo edital do IFRS – Campus Ibirubá.
@@ -62,10 +92,13 @@ _CURSOS_IBIRUBA: frozenset = frozenset({
 def extrair_texto_ibiruba(caminho_pdf: str) -> tuple[list[Document], int, int]:
     """Extrai texto de páginas relevantes ao Campus Ibirubá (e páginas gerais).
 
-    Três estados de rastreamento por página:
+    Três estados de rastreamento por página (persiste entre páginas):
     - 'general': antes de qualquer cabeçalho de campus → inclui (regras gerais)
     - 'ibiruba': dentro da seção Campus Ibirubá      → inclui
     - 'outro':   dentro de seção de outro campus     → descarta
+
+    O estado persiste entre páginas: páginas sem cabeçalho de campus herdam
+    o estado da página anterior (cobre continuações de annexo sem cabeçalho).
 
     Retorna (docs, n_paginas_mantidas, n_paginas_descartadas).
     """
@@ -80,18 +113,21 @@ def extrair_texto_ibiruba(caminho_pdf: str) -> tuple[list[Document], int, int]:
                 try:
                     texto = page.extract_text() or ""
 
+                    # Remove cabeçalho institucional repetido antes de checar estado
+                    texto_limpo = _RE_CABECALHO_PAGINA.sub("", texto)
+
                     if _RE_CAMPUS_IBIRUBA.search(texto):
                         estado = "ibiruba"
-                    elif _RE_CAMPUS_OUTRO.search(texto):
+                    elif _RE_CAMPUS_OUTRO_TEXTO.search(texto):
                         estado = "outro"
 
-                    if estado in ("general", "ibiruba") and texto.strip():
+                    if estado in ("general", "ibiruba") and texto_limpo.strip():
                         n_mantidas += 1
                         docs.append(Document(
-                            content=texto,
+                            content=texto_limpo,
                             meta={"file_path": caminho_pdf, "page_number": i + 1},
                         ))
-                    elif texto.strip():
+                    elif texto_limpo.strip():
                         n_descartadas += 1
                 except Exception as e:
                     print(f"⚠️  Aviso: erro ao ler texto da página {i + 1} de {nome}: {e}")
@@ -305,6 +341,35 @@ def indexar_documentos(
     cleaned_table = cleaner.run(documents=table_docs)
     chunks_tabela = cleaned_table["documents"]
 
+    # ── Auditoria pós-indexação ───────────────────────────────────────────
+    # Varre todos os chunks e avisa se algum ainda contém cabeçalho ou nome
+    # de outro campus do IFRS que não seja Ibirubá.
+    print("\n🔍 Auditoria pós-indexação...")
+    n_audit_falhas = 0
+    for chunk in chunks_texto + chunks_tabela:
+        txt = chunk.content or ""
+        m_hdr = _RE_CAMPUS_OUTRO_TEXTO.search(txt)
+        m_nome = _RE_OUTROS_NOMES_AUDIT.search(txt)
+        if m_hdr:
+            cid = (getattr(chunk, "id", None) or "?")[:8]
+            print(f"   [AUDITORIA] cabeçalho id={cid} "
+                  f"campus={m_hdr.group().strip()!r} | {txt[:100]!r}")
+            n_audit_falhas += 1
+        elif m_nome:
+            cid = (getattr(chunk, "id", None) or "?")[:8]
+            print(f"   [AUDITORIA] nome     id={cid} "
+                  f"campus={m_nome.group().strip()!r} | {txt[:100]!r}")
+            n_audit_falhas += 1
+
+    # Conta chunks com perfil de cronograma (subset dos de texto)
+    _PADRAO_DATA_RECENTE = re.compile(r"\d{1,2}/\d{2}/202[4-9]")
+    n_chunks_cronograma = sum(
+        1 for c in chunks_texto
+        if "cronograma" in (c.content or "").lower()
+        or len(_PADRAO_DATA_RECENTE.findall(c.content or "")) >= 3
+    )
+    # ── ──────────────────────────────────────────────────────────────────
+
     # Chroma não suporta listas/dicts em metadata — serializa _split_overlap para string
     todos_chunks = chunks_texto + chunks_tabela
     for doc in todos_chunks:
@@ -317,9 +382,18 @@ def indexar_documentos(
 
     n_chunks_texto  = len(chunks_texto)
     n_chunks_tabela = len(chunks_tabela)
+    n_descartes = n_pags_descartadas_total + n_descartadas_cota
     print(f"\n✅ Indexação concluída! {n_chunks} chunks persistidos em {pasta_chroma}/")
-    print(f"   • Chunks de texto normal : {n_chunks_texto}")
-    print(f"   • Chunks de tabela       : {n_chunks_tabela} ({n_linhas_tabela} linhas extraídas)")
+    print(f"   • Chunks de texto      : {n_chunks_texto}")
+    print(f"     └─ cronograma-like   : {n_chunks_cronograma}")
+    print(f"   • Chunks de tabela     : {n_chunks_tabela} ({n_linhas_tabela} linhas extraídas)")
+    print(f"   • Descartes (páginas)  : {n_pags_descartadas_total}")
+    print(f"   • Descartes (cota)     : {n_descartadas_cota}")
+    print(f"   • Descartes total      : {n_descartes}")
+    if n_audit_falhas:
+        print(f"   ⚠️  Alertas de auditoria: {n_audit_falhas} (revisar acima)")
+    else:
+        print(f"   ✅ Auditoria: nenhum chunk com campus externo detectado")
 
     return {"n_arquivos": len(arquivos), "n_chunks": n_chunks, "n_linhas_tabela": n_linhas_tabela}
 

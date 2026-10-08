@@ -45,14 +45,25 @@ _SAIDA_MD    = Path(__file__).parent / "resultado_modelos.md"
 # ── Gabarito ──────────────────────────────────────────────────────────────
 
 def carregar_gabarito() -> dict:
-    """Parse todos os blocos A-E de PIPELINE.md. Retorna {id: {pergunta, resposta_esperada}}."""
+    """Parse todos os blocos A-E de PIPELINE.md.
+
+    Retorna {id: {pergunta, resposta_esperada, nao_deve_conter}}.
+    A coluna 'NAO DEVE CONTER' é opcional; quando ausente a lista fica vazia.
+    """
     texto = _PIPELINE_MD.read_text(encoding="utf-8")
     gabarito: dict = {}
-    for m in re.finditer(r"\|\s*([A-E]\d{2})\s*\|([^|]+)\|([^|]+)\|", texto):
+    # Captura 3 colunas obrigatórias + 4ª opcional (NAO DEVE CONTER)
+    for m in re.finditer(
+        r"\|\s*([A-E]\d{2})\s*\|([^|]+)\|([^|]+)\|([^|\n]*)?\|?",
+        texto,
+    ):
         qid = m.group(1).strip()
+        raw4 = (m.group(4) or "").strip()
+        nao_deve = [p.strip() for p in re.split(r"[,;]", raw4) if p.strip()] if raw4 else []
         gabarito[qid] = {
             "pergunta": m.group(2).strip(),
             "resposta_esperada": m.group(3).strip(),
+            "nao_deve_conter": nao_deve,
         }
     return gabarito
 
@@ -64,7 +75,23 @@ _STOP_EVAL = frozenset({
     "no", "na", "nos", "nas", "que", "para", "com", "por", "se", "um",
     "uma", "ao", "aos", "ou", "mas", "sim", "nao", "campus", "ibiruba",
     "curso", "cursos", "deve",
+    # Palavras de unidade/quantidade — o número isolado já é suficiente
+    "vagas", "vaga", "nomes", "distintos", "total", "semestres", "semestre",
 })
+
+# Mapeamento dígito → forma por extenso (português) para correspondência numérica.
+_NUM_EXT = {
+    "1": "um", "2": "dois", "3": "tres", "4": "quatro", "5": "cinco",
+    "6": "seis", "7": "sete", "8": "oito", "9": "nove", "10": "dez",
+    "30": "trinta", "32": "trinta e dois",
+}
+_EXT_NUM = {v: k for k, v in _NUM_EXT.items()}
+
+# Nomes de curso normalizados para contagem de repetições
+_CURSOS_NORM = [
+    "agropecuaria", "informatica", "mecanica", "eletrotecnica",
+    "agronomia", "ciencia da computacao", "engenharia mecanica", "matematica",
+]
 
 
 def _norm(t: str) -> str:
@@ -74,21 +101,73 @@ def _norm(t: str) -> str:
 
 def _keywords(esperada: str) -> list:
     tokens = re.split(r"[,;()/|\s]+", _norm(esperada))
-    return [t for t in tokens if len(t) >= 3 and t not in _STOP_EVAL]
+    # Mantém token se: tem ≥ 3 chars OU é puramente numérico (ex: "32", "4")
+    return [t for t in tokens if t not in _STOP_EVAL and (len(t) >= 3 or t.isdigit())]
 
 
-def avaliar(resposta: str, esperada: str) -> str:
+def _kw_presente(kw: str, resp_norm: str) -> bool:
+    """Verifica se kw está em resp_norm, aceitando dígito ↔ forma por extenso."""
+    if kw in resp_norm:
+        return True
+    # dígito → extenso: "4" aceita "quatro"
+    if kw in _NUM_EXT and _norm(_NUM_EXT[kw]) in resp_norm:
+        return True
+    # extenso → dígito: "quatro" aceita "4"
+    if kw in _EXT_NUM and _EXT_NUM[kw] in resp_norm:
+        return True
+    return False
+
+
+def _contar_repeticoes(resposta: str) -> int:
+    """Conta quantas vezes nomes de curso aparecem mais de uma vez na resposta."""
+    resp = _norm(resposta)
+    total = 0
+    for nome in _CURSOS_NORM:
+        count = 0
+        pos = 0
+        while True:
+            idx = resp.find(nome, pos)
+            if idx == -1:
+                break
+            count += 1
+            pos = idx + 1
+        if count > 1:
+            total += count - 1
+    return total
+
+
+def avaliar(resposta: str, esperada: str,
+            nao_deve_conter: list | None = None) -> tuple[str, int]:
+    """Avalia a resposta contra o gabarito.
+
+    Retorna (resultado, n_repeticoes).
+    - resultado: "OK", "REVISAR" ou "FALHOU"
+    - n_repeticoes: quantos nomes de curso aparecem mais de uma vez
+
+    Regras:
+    1. Se qualquer palavra de nao_deve_conter aparecer → FALHOU imediatamente.
+    2. Números curtos são aceitos sem a unidade (e.g. "32" sem "vagas").
+    3. Dígito ↔ forma por extenso são aceitos (e.g. "4" ↔ "quatro").
+    """
+    resp = _norm(resposta)
+    n_rep = _contar_repeticoes(resposta)
+
+    if nao_deve_conter:
+        for proibida in nao_deve_conter:
+            if _norm(proibida) in resp:
+                return "FALHOU", n_rep
+
     kws = _keywords(esperada)
     if not kws:
-        return "REVISAR"
-    resp = _norm(resposta)
-    n = sum(1 for k in kws if k in resp)
+        return "REVISAR", n_rep
+
+    n = sum(1 for k in kws if _kw_presente(k, resp))
     ratio = n / len(kws)
     if ratio >= 0.8:
-        return "OK"
+        return "OK", n_rep
     elif ratio >= 0.4:
-        return "REVISAR"
-    return "FALHOU"
+        return "REVISAR", n_rep
+    return "FALHOU", n_rep
 
 
 # ── Disponibilidade Ollama ────────────────────────────────────────────────
@@ -202,7 +281,7 @@ def _salvar_csv(resultados: dict, modelos: list, ids: list, gabarito: dict) -> N
     with _SAIDA_CSV.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["id", "pergunta", "modelo", "resposta", "resultado",
-                    "tempo_total_s", "tokens_saida"])
+                    "tempo_total_s", "tokens_saida", "repeticoes"])
         for qid in ids:
             for m in modelos:
                 cell = resultados.get(m, {}).get(qid)
@@ -212,6 +291,7 @@ def _salvar_csv(resultados: dict, modelos: list, ids: list, gabarito: dict) -> N
                     qid, gabarito[qid]["pergunta"], m,
                     cell["resposta"], cell["resultado"],
                     cell["tempo"], cell["tokens"],
+                    cell.get("repeticoes", 0),
                 ])
     print(f"[saída] CSV salvo em {_SAIDA_CSV}")
 
@@ -332,19 +412,22 @@ def main() -> None:
         for qid in ids:
             pergunta = gabarito[qid]["pergunta"]
             esperada = gabarito[qid]["resposta_esperada"]
+            nao_deve = gabarito[qid].get("nao_deve_conter", [])
             print(f"\n  [{qid}] {pergunta}")
             cell = _executar(pipeline, tabela_docs, cronograma_docs, pergunta, modelo_cfg)
-            resultado = avaliar(cell["resposta"], esperada)
+            resultado, n_rep = avaliar(cell["resposta"], esperada, nao_deve)
             print(f"  Resposta : {cell['resposta'][:120]}"
                   f"{'...' if len(cell['resposta']) > 120 else ''}")
             print(f"  Esperado : {esperada[:80]}")
+            rep_info = f", rep={n_rep}" if n_rep else ""
             print(f"  → {resultado}  ({cell['tempo_total_s']:.1f}s, "
-                  f"{cell['tokens_saida']} tokens)")
+                  f"{cell['tokens_saida']} tokens{rep_info})")
             resultados[modelo_id][qid] = {
                 "resposta": cell["resposta"],
                 "resultado": resultado,
                 "tempo": cell["tempo_total_s"],
                 "tokens": cell["tokens_saida"],
+                "repeticoes": n_rep,
             }
 
     _imprimir_tabela(resultados, modelos_ok, ids, gabarito)
