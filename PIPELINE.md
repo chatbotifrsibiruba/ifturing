@@ -248,63 +248,76 @@ Resposta + métricas → UI + ifturing.db (SQLite)
 As respostas esperadas devem ser validadas contra os PDFs originais antes de usar
 em produção — especialmente as datas, que podem mudar de versão para versão do edital.
 
+**Coluna `EVIDENCIA`** (usada por `avaliar_retrieval.py`): trechos literais que precisam
+aparecer no contexto recuperado para que a pergunta seja *respondível*, separados por ` ; `
+(todos devem estar presentes na união dos textos dos k primeiros chunks; comparação sem
+distinção de maiúsculas e com espaços/quebras de linha colapsados). Dentro da célula, `|` e `*`
+literais aparecem escapados (`\|`, `\*`). Perguntas negativas (D01, D03) e perguntas com
+gabarito duvidoso (E03, E04) ficam com a célula vazia e são ignoradas nas métricas.
+**D02:** o item 7.4 do edital informa as taxas (R$ 40,00 / R$ 80,00 / R$ 110,00), portanto a
+"resposta esperada" desta linha (isenção/ausência de taxa) contradiz o PDF; a coluna EVIDENCIA traz
+os valores literais e a resposta esperada deve ser revista pelo responsável pelo gabarito.
+Para os blocos A/B/E o trecho é a linha de tabela como é indexada
+(`Curso: … | Turnos: … | Duração (semestres): … | Total de Vagas: …`), conferida contra as
+tabelas do Anexo II/IV/V do Campus Ibirubá; para o bloco C é o texto do item 2 do edital.
+
 ---
 
 ### Bloco A — Cursos técnicos
 
-| # | Pergunta | Resposta esperada (palavras-chave obrigatórias) | NAO DEVE CONTER |
-|---|---|---|---|
-| A01 | Quais são os cursos técnicos disponíveis no campus Ibirubá? | Agropecuária, Informática, Mecânica, Eletrotécnica (4 nomes distintos) | Geoprocessamento, Edificações, Administração, Agroindústria, Segurança do Trabalho |
-| A02 | Quais cursos técnicos são oferecidos no turno da manhã? | Agropecuária, Informática, Mecânica (Manhã e Tarde) | |
-| A03 | Quais cursos técnicos são oferecidos no turno da noite? | Eletrotécnica, Mecânica (Noite) | |
-| A04 | Quantas vagas tem o curso Técnico em Agropecuária? | 32 | 130, 40 |
-| A05 | Qual é a duração do curso Técnico em Informática? | 3 | |
-| A06 | O campus oferece Técnico em Eletrotécnica? Qual é o turno e quantas vagas? | Sim, turno Noite, 30, 4 | |
-| A07 | Quantas vagas têm os cursos técnicos noturnos no total? | 60 | |
-| A08 | O Técnico em Mecânica é oferecido em quantos turnos? | Dois turnos, Manhã, Tarde, Noite, 32, 30 | |
+| # | Pergunta | Resposta esperada (palavras-chave obrigatórias) | NAO DEVE CONTER | EVIDENCIA |
+|---|---|---|---|---|
+| A01 | Quais são os cursos técnicos disponíveis no campus Ibirubá? | Agropecuária, Informática, Mecânica, Eletrotécnica (4 nomes distintos) | Geoprocessamento, Edificações, Administração, Agroindústria, Segurança do Trabalho | Curso: Técnico em Agropecuária ; Curso: Técnico em Informática ; Curso: Técnico em Mecânica ; Curso: Técnico em Eletrotécnica |
+| A02 | Quais cursos técnicos são oferecidos no turno da manhã? | Agropecuária, Informática, Mecânica (Manhã e Tarde) | | Técnico em Agropecuária \| Turnos: Manhã e Tarde \| Duração (semestres): 3\* \| Total de Vagas: 32 ; Técnico em Informática \| Turnos: Manhã e Tarde \| Duração (semestres): 3\* \| Total de Vagas: 32 ; Técnico em Mecânica \| Turnos: Manhã e Tarde \| Duração (semestres): 3\* \| Total de Vagas: 32 |
+| A03 | Quais cursos técnicos são oferecidos no turno da noite? | Eletrotécnica, Mecânica (Noite) | | Técnico em Eletrotécnica\*\* \| Turnos: Noite \| Duração (semestres): 4 \| Total de Vagas: 30 ; Técnico em Mecânica \| Turnos: Noite \| Duração (semestres): 4 semestres\* \| Total de Vagas: 30 |
+| A04 | Quantas vagas tem o curso Técnico em Agropecuária? | 32 | 130, 40 | Técnico em Agropecuária \| Turnos: Manhã e Tarde \| Duração (semestres): 3\* \| Total de Vagas: 32 |
+| A05 | Qual é a duração do curso Técnico em Informática? | 3 | | Técnico em Informática \| Turnos: Manhã e Tarde \| Duração (semestres): 3\* \| Total de Vagas: 32 |
+| A06 | O campus oferece Técnico em Eletrotécnica? Qual é o turno e quantas vagas? | Sim, turno Noite, 30, 4 | | Técnico em Eletrotécnica\*\* \| Turnos: Noite \| Duração (semestres): 4 \| Total de Vagas: 30 |
+| A07 | Quantas vagas têm os cursos técnicos noturnos no total? | 60 | | Técnico em Eletrotécnica\*\* \| Turnos: Noite \| Duração (semestres): 4 \| Total de Vagas: 30 ; Técnico em Mecânica \| Turnos: Noite \| Duração (semestres): 4 semestres\* \| Total de Vagas: 30 |
+| A08 | O Técnico em Mecânica é oferecido em quantos turnos? | Dois turnos, Manhã, Tarde, Noite, 32, 30 | | Técnico em Mecânica \| Turnos: Manhã e Tarde \| Duração (semestres): 3\* \| Total de Vagas: 32 ; Técnico em Mecânica \| Turnos: Noite \| Duração (semestres): 4 semestres\* \| Total de Vagas: 30 |
 
 ---
 
 ### Bloco B — Cursos superiores
 
-| # | Pergunta | Resposta esperada (palavras-chave obrigatórias) |
-|---|---|---|
-| B01 | Quais são os cursos superiores oferecidos no campus Ibirubá? | Agronomia, Ciência da Computação, Engenharia Mecânica, Matemática (4 nomes) |
-| B02 | Quais são os bacharelados disponíveis? | Agronomia, Ciência da Computação, Engenharia Mecânica (3 cursos) |
-| B03 | Há alguma licenciatura no campus Ibirubá? | Sim, Licenciatura em Matemática |
-| B04 | Qual é a duração do Bacharelado em Ciência da Computação? | 9 semestres |
-| B05 | Qual é o turno do Bacharelado em Agronomia e quantas vagas? | Manhã e Tarde, 30 vagas |
-| B06 | Quantas vagas tem a Licenciatura em Matemática? | 30 vagas |
-| B07 | Qual é a duração do Bacharelado em Engenharia Mecânica? | 10 semestres |
-| B08 | Quais cursos superiores são oferecidos no período noturno? | Ciência da Computação, Engenharia Mecânica, Matemática (3 cursos) |
-| B09 | Quais são os cursos superiores do campus Ibirubá? | Agronomia, Ciência da Computação, Engenharia Mecânica, Matemática (4 cursos) |
-| B10 | Qual é a duração do Bacharelado em Ciência da Computação e da Licenciatura em Matemática? | Ciência da Computação: 9 semestres; Matemática: 8 semestres |
-| B11 | Agronomia e Engenharia Mecânica são bacharelados? | Sim, ambos são Bacharelados |
-| B12 | Quantos cursos superiores existem no campus Ibirubá? | 4 cursos superiores |
+| # | Pergunta | Resposta esperada (palavras-chave obrigatórias) | NAO DEVE CONTER | EVIDENCIA |
+|---|---|---|---|---|
+| B01 | Quais são os cursos superiores oferecidos no campus Ibirubá? | Agronomia, Ciência da Computação, Engenharia Mecânica, Matemática (4 nomes) |  | Curso: Bacharelado em Agronomia ; Curso: Bacharelado em Ciência da Computação ; Curso: Bacharelado em Engenharia Mecânica ; Curso: Licenciatura em Matemática |
+| B02 | Quais são os bacharelados disponíveis? | Agronomia, Ciência da Computação, Engenharia Mecânica (3 cursos) |  | Curso: Bacharelado em Agronomia ; Curso: Bacharelado em Ciência da Computação ; Curso: Bacharelado em Engenharia Mecânica |
+| B03 | Há alguma licenciatura no campus Ibirubá? | Sim, Licenciatura em Matemática |  | Curso: Licenciatura em Matemática |
+| B04 | Qual é a duração do Bacharelado em Ciência da Computação? | 9 semestres |  | Bacharelado em Ciência da Computação \| Turnos: Noite \| Duração (semestres): 9 semestres \| Total de Vagas: 30 |
+| B05 | Qual é o turno do Bacharelado em Agronomia e quantas vagas? | Manhã e Tarde, 30 vagas |  | Bacharelado em Agronomia \| Turnos: Manhã e Tarde \| Duração (semestres): 10 semestres\* \| Total de Vagas: 30 |
+| B06 | Quantas vagas tem a Licenciatura em Matemática? | 30 vagas |  | Licenciatura em Matemática\*\* \| Turnos: Noite \| Duração (semestres): 8 semestres\* \| Total de Vagas: 30 |
+| B07 | Qual é a duração do Bacharelado em Engenharia Mecânica? | 10 semestres |  | Bacharelado em Engenharia Mecânica \| Turnos: Noite \| Duração (semestres): 10 semestres\* \| Total de Vagas: 30 |
+| B08 | Quais cursos superiores são oferecidos no período noturno? | Ciência da Computação, Engenharia Mecânica, Matemática (3 cursos) |  | Bacharelado em Ciência da Computação \| Turnos: Noite \| Duração (semestres): 9 semestres \| Total de Vagas: 30 ; Bacharelado em Engenharia Mecânica \| Turnos: Noite \| Duração (semestres): 10 semestres\* \| Total de Vagas: 30 ; Licenciatura em Matemática\*\* \| Turnos: Noite \| Duração (semestres): 8 semestres\* \| Total de Vagas: 30 |
+| B09 | Quais são os cursos superiores do campus Ibirubá? | Agronomia, Ciência da Computação, Engenharia Mecânica, Matemática (4 cursos) |  | Curso: Bacharelado em Agronomia ; Curso: Bacharelado em Ciência da Computação ; Curso: Bacharelado em Engenharia Mecânica ; Curso: Licenciatura em Matemática |
+| B10 | Qual é a duração do Bacharelado em Ciência da Computação e da Licenciatura em Matemática? | Ciência da Computação: 9 semestres; Matemática: 8 semestres |  | Bacharelado em Ciência da Computação \| Turnos: Noite \| Duração (semestres): 9 semestres \| Total de Vagas: 30 ; Licenciatura em Matemática\*\* \| Turnos: Noite \| Duração (semestres): 8 semestres\* \| Total de Vagas: 30 |
+| B11 | Agronomia e Engenharia Mecânica são bacharelados? | Sim, ambos são Bacharelados |  | Curso: Bacharelado em Agronomia ; Curso: Bacharelado em Engenharia Mecânica |
+| B12 | Quantos cursos superiores existem no campus Ibirubá? | 4 cursos superiores |  | Curso: Bacharelado em Agronomia ; Curso: Bacharelado em Ciência da Computação ; Curso: Bacharelado em Engenharia Mecânica ; Curso: Licenciatura em Matemática |
 
 ---
 
 ### Bloco C — Datas e cronograma (Edital 2027, datas de 2026)
 
-| # | Pergunta | Resposta esperada (palavras-chave obrigatórias) |
-|---|---|---|
-| C01 | Quando são as inscrições para o processo seletivo? | 30/09 a 19/10/2026 |
-| C02 | Quando acontece a aplicação das provas? | 06/12/2026 |
-| C03 | Qual é o prazo para recurso após as provas? | 07 a 08/12/2026 |
-| C04 | Quando são publicados os locais de prova? | 27/11/2026 |
-| C05 | Quando é publicada a Classificação Geral e Aprovados? | 05/01/2027 |
-| C06 | Quando é a Chamada Pública? | 27/01/2027 |
-| C07 | Qual é a data limite para resultado final da matrícula na Chamada Pública? | até 03/02/2027 |
+| # | Pergunta | Resposta esperada (palavras-chave obrigatórias) | NAO DEVE CONTER | EVIDENCIA |
+|---|---|---|---|---|
+| C01 | Quando são as inscrições para o processo seletivo? | 30/09 a 19/10/2026 |  | 30/09 a ; 19/10/2026 |
+| C02 | Quando acontece a aplicação das provas? | 06/12/2026 |  | 06/12/2026 Aplicação das provas |
+| C03 | Qual é o prazo para recurso após as provas? | 07 a 08/12/2026 |  | 07 e ; 08/12/2026 |
+| C04 | Quando são publicados os locais de prova? | 27/11/2026 |  | Divulgação dos locais de prova ; 27/11/2026 |
+| C05 | Quando é publicada a Classificação Geral e Aprovados? | 05/01/2027 |  | 05/01/2027 ; Classificação Geral e Aprovados |
+| C06 | Quando é a Chamada Pública? | 27/01/2027 |  | Publicação da Chamada Pública (Sorteio e Prova) ; 27/01/2027 |
+| C07 | Qual é a data limite para resultado final da matrícula na Chamada Pública? | até 03/02/2027 |  | resultado final da matrícula na Chamada Pública ; 03/02/2027 |
 
 ---
 
 ### Bloco D — Regras gerais (espera-se "Não encontrei" ou resposta negativa)
 
-| # | Pergunta | Resposta esperada |
-|---|---|---|
-| D01 | O campus Ibirubá oferece curso de Direito? | "Não encontrei essa informação nos documentos." |
-| D02 | Qual é o valor da taxa de inscrição? | Resposta deve mencionar isenção ou ausência de taxa; **não deve** inventar um valor |
-| D03 | Há curso de Tecnologia em Análise e Desenvolvimento de Sistemas? | "Não encontrei essa informação nos documentos." |
+| # | Pergunta | Resposta esperada | NAO DEVE CONTER | EVIDENCIA |
+|---|---|---|---|---|
+| D01 | O campus Ibirubá oferece curso de Direito? | "Não encontrei essa informação nos documentos." |  |  |
+| D02 | Qual é o valor da taxa de inscrição? | Resposta deve mencionar isenção ou ausência de taxa; **não deve** inventar um valor |  | R$ 40,00 ; R$ 80,00 ; R$ 110,00 |
+| D03 | Há curso de Tecnologia em Análise e Desenvolvimento de Sistemas? | "Não encontrei essa informação nos documentos." |  |  |
 
 ---
 
@@ -313,12 +326,12 @@ em produção — especialmente as datas, que podem mudar de versão para versã
 > **Coluna "O que verificar":** para E01 usada também como palavras-chave do avaliador automático.
 > Para E02–E04 contém descrição para revisão humana (avaliador retorna REVISAR por ausência de keywords simples).
 
-| # | Pergunta | O que verificar (auto-avaliação: palavras-chave) | NAO DEVE CONTER |
-|---|---|---|---|
-| E01 | Quantos cursos técnicos existem no total? | 4 quatro | Geoprocessamento, Edificações, Administração, Agroindústria, Segurança do Trabalho |
-| E02 | Liste todos os cursos do campus Ibirubá | Agropecuária, Informática, Mecânica, Eletrotécnica, Agronomia, Matemática | |
-| E03 | Quais documentos preciso para me inscrever? | documento, identidade, cpf | |
-| E04 | Quais são as datas do processo seletivo? (sem especificar ano) | 2026, 2027 | 2025 |
+| # | Pergunta | O que verificar (auto-avaliação: palavras-chave) | NAO DEVE CONTER | EVIDENCIA |
+|---|---|---|---|---|
+| E01 | Quantos cursos técnicos existem no total? | 4 quatro | Geoprocessamento, Edificações, Administração, Agroindústria, Segurança do Trabalho | Curso: Técnico em Agropecuária ; Curso: Técnico em Informática ; Curso: Técnico em Mecânica ; Curso: Técnico em Eletrotécnica |
+| E02 | Liste todos os cursos do campus Ibirubá | Agropecuária, Informática, Mecânica, Eletrotécnica, Agronomia, Matemática | | Curso: Técnico em Agropecuária ; Curso: Técnico em Informática ; Curso: Técnico em Mecânica ; Curso: Técnico em Eletrotécnica ; Curso: Bacharelado em Agronomia ; Curso: Bacharelado em Ciência da Computação ; Curso: Bacharelado em Engenharia Mecânica ; Curso: Licenciatura em Matemática |
+| E03 | Quais documentos preciso para me inscrever? | documento, identidade, cpf | |  |
+| E04 | Quais são as datas do processo seletivo? (sem especificar ano) | 2026, 2027 | 2025 |  |
 
 ---
 
