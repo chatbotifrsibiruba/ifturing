@@ -16,4 +16,5 @@ _diag_cronograma.py
 _check_crono_novo.py
 resultado_modelos.*
 retrieval_resultado.*
+retrieval_resultado_*
 /chroma_exp_*

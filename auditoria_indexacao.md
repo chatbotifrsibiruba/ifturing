@@ -337,3 +337,333 @@ Achados que a motivam: 104/120 páginas descartadas; seções 10–19 ausentes; 
 | `retrieval_resultado.md` / `.csv` | Saídas do avaliador (ignoradas pelo git) |
 | `chroma_exp_prod/`, `chroma_exp_prefix/` | Coleções temporárias (ignoradas pelo git) |
 | `auditoria_indexacao.md` | Este relatório |
+
+
+---
+
+# Fase 2 — correção da cobertura do índice
+
+Escopo: corrigir a cobertura do índice com base nos achados da fase 1 (seções 2 e 3 acima). Alterados: `indexar.py`, `avaliar_retrieval.py` e o gabarito (`PIPELINE.md`). **Não** foram alterados `nucleo.py`, a coleção de produção nem rodada a reindexação de produção: não existe `./chroma_data` neste checkout, e toda a validação usou coleções temporárias `./chroma_exp_*` (`chroma_exp_fase2` é a nova; `chroma_exp_prod` é a da fase 1, mantida como linha de base). Nada foi commitado.
+
+## F2.0 Resumo
+
+| Parte | Resultado |
+|---|---|
+| **A — escopo de campus e páginas** | **Concluída.** 23 de 36 seções sem chunk → **0** (o Anexo III não tem oferta do Ibirubá e fica como "n/a esperado"). Descarte global de 104 páginas → classificação por página: 31 de corpo e 28 de anexo geral sempre mantidas; só as 57 páginas de tabela de outros campi são descartadas. Chunks ilegíveis 128 → **0**. `page_number` sempre 1 → **59 páginas distintas** (e `pagina_ini`/`pagina_fim`). Contaminação por outros campi 4 → **0**. O indexador agora **falha (exit 1)** se uma seção de nível 1 ficar sem chunk (testado). |
+| **B — cronograma estruturado** | **Concluída.** 26 linhas "Data \| Evento" reconstruídas de `find_tables`, cada data associada ao evento certo; **conferidas visualmente, uma a uma, contra o PDF renderizado (págs. 3–5)**. 6 chunks `tipo="cronograma"`; o texto bruto fragmentado da tabela foi removido das páginas. |
+| **C — gabarito** | **Concluída.** D02, E03, E04, C03, C04, C06 corrigidos; D01/D03 marcadas `NEGATIVA`; **24 perguntas novas** (seções 10 a 18: 2 a 4 por seção) mais E05; todas com evidência literal de ocorrência única no PDF. As 30 perguntas antigas ficam separadas. |
+| **D — teste** | **Cobertura verde; ranking do híbrido NÃO está verde.** Teto de recuperação (`hit@ctx`) do grupo legado igual à linha de base (97%) e o grupo novo passa de 4% para 85%. Mas hit@3/5/10 do grupo legado no fluxo atual do `nucleo.py` caem (híbrido 57/80/90 → 50/67/73). Causa identificada (F2.6): a heurística de `nucleo.py` injeta agora 14 chunks "cronograma-like" na frente do contexto. Com a injeção por metadado (hipótese, **não** aplicada no `nucleo.py`) o híbrido legado volta a 57/77/90. Decisão pendente sua: ver F2.7. |
+
+## F2.1 O que mudou nos arquivos
+
+| Arquivo | Mudança |
+|---|---|
+| `indexar.py` | Reescrito (mantém `indexar_documentos()`, `extrair_tabelas_como_texto()` e o formato do índice; removidos `extrair_texto_ibiruba()` e o filtro de cotas). Funções novas: `_classificar_paginas`, `_filtrar_itens_campus`, `_filtrar_linhas_por_campus`, `_texto_legenda`, `_extrair_cronograma`, `_chunkar`, `_portao_legibilidade`, `_cobertura_secoes`; CLI em `main()`. O índice anterior só é removido **depois** de os portões passarem. |
+| `avaliar_retrieval.py` | IDs com sufixo (`F10a`); `NEGATIVA`; coluna `EVIDENCIA_LEGADO` + `--legado`; grupos `legado`/`novas` separados em todas as saídas; chunks das falhas com tipo e seção; tamanho do contexto do híbrido; `--crono-por-meta` (hipótese, desligada por padrão). |
+| `PIPELINE.md` | Gabarito (seção 4): ver F2.4. |
+| `.gitignore` | `retrieval_resultado_*` (saída da hipótese). |
+
+Parâmetros do chunker **inalterados** (`split_by=word`, 150, overlap 20), assim como o embedder, a métrica `l2` e a ausência de prefixos E5 (fase 3).
+
+## F2.2 Parte A — escopo de campus e páginas
+
+### Classificação por página
+
+| Categoria | Páginas | Tratamento |
+|---|---|---|
+| (i) corpo do edital (antes do 1º "ANEXO") | 1–31 (31 págs.) | Sempre mantidas; listas por item (abaixo) |
+| (ii) anexo de tabela do Ibirubá | 44, 45, 69, 84 (4 págs.) | Tabelas estruturadas (9 linhas) + legenda; texto bruto não indexado |
+| (iii) anexo de tabela de outro campus | 57 págs. (Anexos II, III, IV e V sem Ibirubá) | Descartadas |
+| (iv) anexo geral | 32 (Anexo I) e 94–120 (Anexos VI a XV): 28 págs. | Sempre mantidas |
+
+Um anexo é "de tabela" quando alguma de suas páginas tem cabeçalho de campus nos dois formatos do edital (`Campus X (a descrição das vagas…` e `Campus X: A descrição da tabela…`, com variantes `Campus Canoas(a descrição` e `Campus X: (a descrição…`). O campus vale até o próximo cabeçalho e é herdado pelas páginas de continuação sem cabeçalho (ex.: págs. 73 e 78). Nenhuma página do Ibirubá mistura campi (o aviso de página mista não disparou).
+
+### Listas por item (9.5 e 20.1)
+
+Item de lista = linha `[N.N.N] Campus X:`; vale até o próximo item ou o próximo título/item numerado. Mantidos: introdução + item do Ibirubá.
+
+| Lista | Itens | Mantidos | Descartados |
+|---|---|---|---|
+| 9.5 (atendimento especial) | 18 | 1 (9.5.8) | 17 |
+| 20.1 (endereços) | 19 (o edital não tem 20.1.3; o último, Zona Norte, não é numerado) | 1 (20.1.10) | 18 |
+
+208 linhas do corpo descartadas. Os dois itens do Ibirubá viram chunks `tipo=corpo`, `escopo_campus=ibiruba` (págs. 12 e 29). Antes, as págs. 12 e 29 entravam inteiras, com os endereços de Canoas, Feliz, Farroupilha e Porto Alegre.
+
+### Páginas de anexo de tabela do Ibirubá: legendas
+
+As 4 páginas foram extraídas com legibilidade; **nada foi perdido** além dos fragmentos de cabeçalho de coluna rotacionado ("Vagas Prova", "Reserva Ensino Público", "Renda igual ou inferior…"), cujo conteúdo estrutural já vem de `extract_tables`.
+
+- O embaralhamento da fase 1 vinha de `y_tolerance=3` (padrão do `extract_text`), que funde linhas muito próximas. O parágrafo "descrição das vagas" é texto de fonte de **1 pt e cor branca**: com `y_tolerance=1` sai limpo.
+- Para a legenda usa-se o texto **fora** dos bounding boxes das tabelas (cabeçalho "Campus Ibirubá…", notas `*mais estágio obrigatório.` e `** curso com parte da carga horária EaD.`, e o parágrafo por curso com C1 a C10) mais os rodapés de tabela lidos das células (`Observação: …`, pág. 69). Linhas de dados (já em `tipo=tabela`) e cabeçalhos rotacionados não entram.
+- Resultado: **32 chunks `tipo=legenda`** (págs. 44, 45, 69 e 84).
+- ⚠️ **O parágrafo "descrição das vagas" é invisível no PDF renderizado** (branco, 1 pt; é descrição para leitores de tela, como diz o próprio cabeçalho "a descrição das vagas está após a tabela"). O conteúdo é coerente com a tabela visível (conferido na pág. 45: C1 = 13 e C2 = 1 nas duas fontes). Foi indexado por pedido ("descrição das vagas"), mas fica a decisão: se preferir só texto visível, basta ignorar caracteres com `non_stroking_color == (1.0,)` e `size < 2`.
+
+### Anexo IX (tabela de pesos por curso)
+
+Não tem cabeçalho de campus (cai em "anexo geral"), mas cada linha começa pelo campus. Mantidos título e linhas do **Ibirubá**; descartadas as linhas dos outros campi, suas continuações e as linhas do cabeçalho rotacionado (99 linhas). **Limitação:** os nomes das 5 colunas de peso estão em texto rotacionado ilegível; as 4 linhas do Ibirubá (`Ibirubá Bacharelado em Agronomia 2 2 2 2 2`…) foram indexadas **sem** cabeçalho. A ordem provável (Linguagens, Matemática, Ciências da Natureza, Ciências Humanas, Redação) é inferência minha e **não** foi incluída no índice.
+
+### Portão de qualidade e de cobertura
+
+- **Legibilidade** (corpo, legenda e anexo geral): rejeita chunk com ≥ 40% de tokens de 1–2 caracteres ou com fração de tokens de 4+ caracteres presentes em ≥ 3 chunks do corpus < 0,30. **Rejeitados: 0** de 173. Margem observada: menor fração de tokens frequentes entre os aceitos = 0,33 (Anexo VIII, conteúdo programático legítimo); na fase 1 os ilegíveis ficavam em 0,00. Maior fração de tokens curtos entre os aceitos: 0,37.
+  - **Desvio da regra literal:** tokens só de dígitos não contam como "curtos" e chunks com menos de 20 tokens não são avaliados. Motivo: a regra literal (contando dígitos) rejeitaria **17 chunks legítimos** (14 de corpo com itens numerados como "9.1.1." e 3 de anexo, entre eles a tabela de pesos), todos com 40–64% de tokens curtos. O indexador imprime quais seriam esses 17 (`ids`) a cada execução.
+- **Cobertura:** o indexador levanta `IndexacaoIncompleta` e sai com **código 1** se alguma seção de nível 1 (itens 1 a 20, o segundo "20" do edital e anexos gerais ou com tabela do campus) ficar sem chunk. **Testado:** simulando a perda dos chunks da seção 12 → `exit code: 1`, mensagem "Indexação ABORTADA: seção(ões) de nível 1 sem nenhum chunk: 12 (RECURSO DO GABARITO DA PROVA). O índice anterior foi preservado.", e o diretório de destino não foi tocado.
+- A tabela abaixo é impressa ao final de **toda** indexação (também na falha).
+
+### Metadados reais por chunk
+
+`secao` (rótulo), `secao_titulo`, `secoes` (todas as seções que o chunk toca, ex. `"11,12,13"`), `pagina_ini`, `pagina_fim`, `page_number` (= `pagina_ini`; o splitter o sobrescrevia com 1), `tipo` (`corpo` | `tabela` | `cronograma` | `legenda` | `anexo_geral`), `escopo_campus` (`todos` | `ibiruba`), `source`, `file_path`, `split_id`, `split_idx_start`. A coleção Chroma continua `l2`.
+
+Como o chunking continua por página (150/20), um chunk nunca cruza página (exceto os de cronograma, que reúnem linhas das págs. 3 a 5); `secao` é a seção do início do chunk e `secoes` lista as demais. O `_split_overlap`/`source_id` do Haystack deixaram de ser gravados.
+
+### Cobertura por seção de nível 1 (índice final, `chroma_exp_fase2`)
+
+| seção | nº de chunks | páginas | status | título |
+|---|---|---|---|---|
+| 1 | 7 | 1-3 | ok | INFORMAÇÕES GERAIS |
+| 2 | 9 | 3-5 | ok | CRONOGRAMA DO PROCESSO SELETIVO |
+| 3 | 3 | 5-6 | ok | QUEM PODE PARTICIPAR DO PROCESSO SELETIVO |
+| 4 | 4 | 6-7 | ok | INFORMAÇÕES DAS VAGAS E COTAS |
+| 5 | 1 | 7 | ok | DOS CURSOS, VAGAS E MATÉRIAS PARA PROVA |
+| 6 | 2 | 8 | ok | DA ISENÇÃO (NÃO PAGAMENTO) DA TAXA DE INSCRIÇÃO |
+| 7 | 7 | 8-10 | ok | DAS INSCRIÇÕES |
+| 8 | 2 | 10 | ok | DA CONFIRMAÇÃO DA INSCRIÇÃO |
+| 9 | 3 | 11-12 | ok | COMO SOLICITAR CONDIÇÃO ESPECIAL PARA A REALIZAÇÃO DO E |
+| 10 | 6 | 14-16 | ok | REALIZAÇÃO DA COMISSÃO DE HETEROIDENTIFICAÇÃO |
+| 11 | 12 | 16-20 | ok | REALIZAÇÃO DA PROVA |
+| 12 | 1 | 20 | ok | RECURSO DO GABARITO DA PROVA |
+| 13 | 2 | 20 | ok | DO SORTEIO PÚBLICO |
+| 14 | 5 | 20-21 | ok | COMO SERÁ FEITA A CLASSIFICAÇÃO |
+| 15 | 4 | 21-22 | ok | COMO SERÁ O PREENCHIMENTO DAS VAGAS |
+| 16 | 6 | 22-23 | ok | COMO SERÁ A MATRÍCULA |
+| 17 | 4 | 24-25 | ok | O QUE É E COMO FUNCIONA A CHAMADA PÚBLICA |
+| 18 | 3 | 25-26 | ok | DOCUMENTAÇÃO PARA MATRÍCULA |
+| 19 | 5 | 26-27 | ok | COMPROVAÇÃO DE REQUISITOS PARA OCUPAÇÃO DE VAGA RESERVA |
+| 20 | 3 | 27-29 | ok | ENDEREÇO E E-MAIL DOS CAMPI |
+| 20b | 1 | 31 | ok | DAS DISPOSIÇÕES GERAIS E FINAIS |
+| ANEXO I | 2 | 32 | ok | LEGENDA PARA OS QUADROS DE VAGAS |
+| ANEXO II | 14 | 44-45 | ok | QUADROS DE VAGAS - CURSOS INTEGRADOS, CONCOMITANTES E |
+| ANEXO III | 0 | — | sem oferta do campus (esperado) | QUADROS DE VAGAS - CURSOS EJA |
+| ANEXO IV | 6 | 69 | ok | QUADROS DE VAGAS - CURSOS SUBSEQUENTES |
+| ANEXO V | 21 | 84 | ok | QUADROS DE VAGAS - CURSOS DE GRADUAÇÃO |
+| ANEXO VI | 9 | 94-97 | ok | SISTEMA DE RESERVA DE VAGAS |
+| ANEXO VII | 7 | 98-100 | ok | CONTEÚDOS PROGRAMÁTICOS - CURSOS INTEGRADOS, CONCOMITAN |
+| ANEXO VIII | 15 | 101-105 | ok | CONTEÚDOS PROGRAMÁTICOS - CURSOS SUBSEQUENTES E DE GRAD |
+| ANEXO IX | 2 | 106,108 | ok | TABELA DE PESOS PARA PROVA E ENEM PARA OS CURSOS DE GRA |
+| ANEXO X | 4 | 110-111 | ok | FORMULÁRIO DE SOLICITAÇÃO DE CONDIÇÃO ESPECIAL |
+| ANEXO XI | 3 | 112 | ok | FLUXO PARA PREENCHIMENTO DAS VAGAS RESTANTES |
+| ANEXO XII | 13 | 113-117 | ok | DOCUMENTOS OBRIGATÓRIOS |
+| ANEXO XIII | 1 | 118 | ok | FORMULÁRIO DE DECLARAÇÃO DE MEMBRO DE COMUNIDADE INDÍGE |
+| ANEXO XIV | 2 | 119 | ok | DECLARAÇÃO DE PERTENCIMENTO ÉTNICO QUILOMBOLA |
+| ANEXO XV | 2 | 120 | ok | SOLICITAÇÃO DE USO DE NOME SOCIAL PARA MENOR DE IDADE |
+
+Nenhuma seção sem chunk. "ANEXO III" (quadros de EJA) não tem oferta do Ibirubá no PDF; as demais têm. Os chunks de "ANEXO II/IV/V" são as linhas de tabela e as legendas do Ibirubá.
+
+### Contagem de chunks
+
+| tipo | linha de base (fase 1) | fase 2 |
+|---|---|---|
+| texto bruto (corpo + anexos embaralhados) | 167 | — |
+| corpo | — | 66 |
+| anexo_geral | — | 60 |
+| legenda | — | 32 |
+| cronograma | — | 6 |
+| tabela | 9 | 9 |
+| **total** | **176** | **173** |
+
+Qualidade (fase 2): 0 chunks ilegíveis (eram 128 de 167); 0 chunks > 200 palavras (eram 2); chunks de corpo com cabeçalho "Campus <outro>:": 0 (eram 4); `page_number` com 59 valores distintos (era sempre 1). 36 dos 66 chunks de corpo começam em letra minúscula (corte no meio de frase), igual em natureza à fase 1 porque o chunker não foi alterado.
+
+## F2.3 Parte B — cronograma estruturado
+
+**Método.** `pdfplumber.find_tables()` nas páginas do item 2 (da página do título "2." até a do título "3."): a tabela de 2 colunas ("Data/Período" | "Evento") é reconstruída célula a célula, então a data fica na **mesma faixa vertical** do evento (sem agrupar por linha de texto). Linha com a célula de data vazia é continuação do evento anterior, inclusive através da quebra de página (caso de "14 a 18/11/2026": o evento termina na pág. 4). O evento é mantido **inteiro**, o que preserva o complemento que diferencia as fases repetidas ("Período para realização de recursos … quanto ao gabarito das provas" / "… ao resultado das comissões de heteroidentificação…" / "… da análise da documentação de matrícula…"). O texto da tabela é removido das páginas (`outside_bbox`), então o texto bruto fragmentado não duplica; o título "2. CRONOGRAMA…" e a nota "*As informações referentes ao cronograma…" ficam no corpo.
+
+**Resultado: 26 linhas.** Cada chunk traz linhas `Data: <célula de data> | Evento: <evento>`.
+
+**Chunks.** 6 chunks `tipo="cronograma"` (linhas por chunk: 6, 3, 5, 6, 3 e 3; 66 a 169 palavras; 134 a 341 tokens do E5, abaixo do limite de 512). O primeiro agrupamento ("~6 linhas") gerou um chunk de 530 tokens, que seria truncado no embedding; passou a valer o teto de 180 palavras. Um chunk com 1 só linha não satisfaria a heurística "cronograma-like" de `nucleo.py` (≥ 3 datas), por isso todo chunk tem pelo menos 3 linhas.
+
+**Confirmação manual.** As páginas 3, 4 e 5 foram renderizadas e lidas visualmente; as 26 linhas abaixo batem com o PDF (data na mesma linha da tabela do evento, na mesma ordem), incluindo o evento de 3 trechos "14 a 18/11/2026" que continua na pág. 4.
+
+| # | pág. | Data/Período (célula) | Evento (início) |
+|---|---|---|---|
+| 1 | 3 | De 30/09 a 19/10/2026 | Período de inscrições e solicitação de isenção da taxa de inscrição (não pagamento da taxa de i… |
+| 2 | 3 | 21/10/2026 | Data limite para pagamento da taxa de inscrição no sistema bancário. |
+| 3 | 3 | 22/10/2026 | Divulgação da Lista Preliminar das/dos candidatas/candidatos inscritas/inscritos. A publicação … |
+| 4 | 3 | 23 a 25/10/2026 | Recurso quanto a não processamento da inscrição. A/O candidata/candidato que o nome não constar… |
+| 5 | 3 | 29/10/2026 | Divulgação da Lista Final das/dos candidatas/candidatos inscritas/inscritos. A publicação será … |
+| 6 | 3 | 10/11/2026 | Publicação da chamada às/aos candidatas/candidatos autodeclarados negras/negros (pretas/pretos … |
+| 7 | 3 | 14 a 18/11/2026 | Período para as/os candidatas/candidatos autodeclaradas/autodeclarados negra/negro (preto ou pa… |
+| 8 | 4 | De 16 a 18/11/2026 | Realização das comissões de heteroidentificação para as/os candidatas/candidatos autodeclarados… |
+| 9 | 4 | 19/11/2026 | Publicação do resultado preliminar das comissões de heteroidentificação para as/os candidatas/c… |
+| 10 | 4 | De 20 a 22/11/2026 | Período para realização de recursos (pedidos de revisão, questionamentos) quanto ao resultado d… |
+| 11 | 4 | 24/11/2026 | Publicação do resultado final das comissões de heteroidentificação para as/os candidatas/candid… |
+| 12 | 4 | 27/11/2026 | Divulgação dos locais de prova. A publicação será realizada no site ingresso.ifrs.edu.br. |
+| 13 | 4 | 06/12/2026 | Aplicação das provas conforme divulgação dos locais de prova. |
+| 14 | 4 | 07/12/2026 | Divulgação do gabarito preliminar das provas. A publicação será realizada no site ingresso.ifrs… |
+| 15 | 4 | 07 e 08/12/2026 | Período para realização de recursos (pedidos de revisão, questionamentos) quanto ao gabarito da… |
+| 16 | 4 | 10/12/2026 | Realização do Sorteio Público. O sorteio será transmitido pelo canal oficial do IFRS no youtube… |
+| 17 | 5 | 16/12/2026 | Divulgação do resultado dos recursos e gabarito definitivo da prova. A publicação será realizad… |
+| 18 | 5 | 05/01/2027 | Publicação da Classificação Geral e Aprovados em 1ª Chamada (Sorteio e Prova). A data e cronogr… |
+| 19 | 5 | De 06 a 12/01/2027 | Envio da documentação para todas/todos candidatas/candidatos inscritas/inscritos nos modos de i… |
+| 20 | 5 | 18/01/2027 | Publicação do resultado preliminar da matrícula em Primeira Chamada (Sorteio e Prova). A public… |
+| 21 | 5 | 19 e 20/01/2027 | Período para realização de recursos (pedidos de revisão, questionamentos) da análise da documen… |
+| 22 | 5 | 22/01/2027 | Previsão de publicação da Classificação e da Chamada Pública para o modo de ingresso ENEM. A pu… |
+| 23 | 5 | 23 a 27/01/2027 | Previsão de envio da documentação para todas/todos candidatas/candidatos inscritas/inscritos no… |
+| 24 | 5 | 25/01/2027 | Publicação do resultado final das matrículas em Primeira Chamada (Sorteio e Prova). A publicaçã… |
+| 25 | 5 | 27/01/2027 | Publicação da Chamada Pública (Sorteio e Prova). A publicação será realizada no site ingresso.i… |
+| 26 | 5 | Até 03/02/2027 | Publicação do resultado final da matrícula na Chamada Pública (Sorteio, Prova e ENEM). A public… |
+
+**Antes / depois (6 linhas).** "Antes" é o texto do índice da fase 1 (`chroma_exp_prod`); a data aparece afastada do evento por causa das duas colunas.
+
+| Evento | Antes (fase 1) | Depois (fase 2) |
+|---|---|---|
+| Inscrições | `… 2. CRONOGRAMA DO PROCESSO SELETIVO Evento Data/Período De 30/09 a Período de inscrições e solicitação de isenção da taxa de inscrição (não 19/10/2026 pagamento da taxa de inscrição). 21/10/2026 Data…` | `Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições e solicitação de isenção da taxa de inscrição (não pagamento da taxa de inscrição).` |
+| Recurso do gabarito | `… Período para realização de recursos (pedidos de revisão, 07 e questionamentos) quanto ao gabarito das provas por meio do 08/12/2026 preenchimento do Formulário de Recursos no link…` | `Data: 07 e 08/12/2026 \| Evento: Período para realização de recursos (pedidos de revisão, questionamentos) quanto ao gabarito das provas por meio do preenchimento do Formulário de Recursos no link: https://forms.gle/JAygrEBB9ZNMHpMa7.` |
+| Recurso (heteroidentificação) | `… autodeclarados De 20 a negras/negros (pretas/pretos e pardas/pardos), indígenas e quilombolas 22/11/2026 inscritos em todos os modos…` | `Data: De 20 a 22/11/2026 \| Evento: Período para realização de recursos (pedidos de revisão, questionamentos) quanto ao resultado das comissões de heteroidentificação para as/os candidatas/candidatos autodeclarados negras/negros…` |
+| Recurso (matrícula, 1ª chamada) | `… da análise da documentação de matrícula na Primeira 19 e Chamada (Sorteio e Prova) e eventual complementação da 20/01/2027 documentação…` | `Data: 19 e 20/01/2027 \| Evento: Período para realização de recursos (pedidos de revisão, questionamentos) da análise da documentação de matrícula na Primeira Chamada (Sorteio e Prova) e eventual complementação da documentação…` |
+| Chamada Pública | `… Publicação da Chamada Pública (Sorteio e Prova). A publicação será 27/01/2027 realizada no site ingresso.ifrs.edu.br. Até Publicação do resultado final da matrícula…` | `Data: 27/01/2027 \| Evento: Publicação da Chamada Pública (Sorteio e Prova). A publicação será realizada no site ingresso.ifrs.edu.br.` |
+| Resultado final | `… Até Publicação do resultado final da matrícula na Chamada Pública (Sorteio, 03/02/2027 Prova e ENEM)…` (texto do PDF; ficava no fim do chunk anterior) | `Data: Até 03/02/2027 \| Evento: Publicação do resultado final da matrícula na Chamada Pública (Sorteio, Prova e ENEM). A publicação será realizada no site ingresso.ifrs.edu.br.` |
+
+## F2.4 Parte C — gabarito (`PIPELINE.md`)
+
+| Pergunta | Mudança |
+|---|---|
+| **D02** | Resposta esperada corrigida: R$ 40,00 (Sorteio ou ENEM), R$ 80,00 (Prova, técnicos) e R$ 110,00 (Prova, Graduação), item 7.4; isenção pelo CadÚnico (seção 6) e sem taxa em EJA (7.5). Evidência inalterada. |
+| **E03** | Agora "O que preciso para me inscrever no processo seletivo?" (internet em ingresso.ifrs.edu.br, login gov.br com CPF; itens 7.1 e 7.2). Evidência: `exclusivamente via INTERNET no endereço ingresso.ifrs.edu.br` e `para autenticar-se com seu CPF e senha`. |
+| **E05** (nova) | "Quais documentos preciso apresentar para a matrícula?" (Anexo XII; seção 18). Evidência: título do bloco "CONVOCADOS PARA MATRÍCULA… DEVEM APRESENTAR", `Carteira de identidade ou documento equivalente`, `Documento onde conste o nº do CPF`. |
+| **E04** | Evidência = 4 marcos do cronograma no formato "Data \| Evento" (inscrição, prova, classificação, resultado final); só é respondível com o cronograma todo no contexto. |
+| **C03, C04, C06** (e C01, C02, C05, C07) | Evidência = **linha inteira** "Data: … \| Evento: …", única no índice. A evidência da fase 1 foi preservada na coluna `EVIDENCIA_LEGADO` para avaliar a linha de base (formato antigo). |
+| **D01, D03** | `EVIDENCIA = NEGATIVA`: perguntas negativas, avaliadas só pela resposta "não consta"; fora das métricas de retrieval. |
+| **F10a–F18c** (novas, 24) | Seção 10: 3 · 11: 4 · 12: 2 · 13: 2 · 14: 3 · 15: 2 · 16: 3 · 17: 2 · 18: 3. Cada `EVIDENCIA` é texto literal do PDF com **uma única ocorrência** (conferido por busca no texto normalizado; a primeira versão de F11d tinha uma evidência com 2 ocorrências e foi trocada por `V. Passaporte; ou VI. Carteira Nacional de Habilitação`). |
+
+Os grupos são separados em todas as saídas do avaliador: **legado** (as 30 antigas: A01–A08, B01–B12, C01–C07, D02, E01, E02) e **novas** (24 do bloco F mais E03, E04 e E05 = 27).
+
+**Dúvidas / ressalvas do gabarito**
+- "Resposta esperada" das perguntas novas são resumos que escrevi a partir do texto das seções; as evidências foram conferidas, as palavras-chave de resposta **não** foram testadas com um LLM.
+- E04 mede 4 marcos, não "todas as datas"; E05 cobre só o bloco comum a todos os candidatos do Anexo XII (há blocos por tipo de curso e cota).
+- `teste_modelos.py` (não alterado) usa o ID `E03`, que agora tem outro texto e outras palavras-chave; as IDs `F…` e `E05` não são lidas por ele (o regex só aceita `[A-E]\d{2}`).
+- D02: o item 7.4 informa valores, mas o enunciado antigo pedia "isenção ou ausência de taxa". Se a intenção era testar a resposta sobre isenção, vale uma pergunta separada.
+
+## F2.5 Parte D — teste
+
+Comandos: `python avaliar_retrieval.py --run base=./chroma_exp_prod --legado base --run fase2=./chroma_exp_fase2` (oficial; saída `retrieval_resultado.md/.csv`) e o mesmo com `--crono-por-meta --saida retrieval_resultado_meta` (hipótese). `base` usa `EVIDENCIA_LEGADO` nas perguntas antigas porque o índice antigo não tem o formato "Data | Evento"; a linha de base reproduz exatamente os números da fase 1.
+
+### Grupo legado (30 perguntas antigas): fluxo atual do `nucleo.py`
+
+| coleção | modo | hit@3 | hit@5 | hit@10 | MRR | hit@ctx |
+|---|---|---|---|---|---|---|
+| base (fase 1) | semântico | 67% | 70% | 80% | 0,539 | 80% |
+| base (fase 1) | híbrido | 57% | **80%** | 90% | 0,493 | 97% |
+| fase 2 | semântico | 60% | 63% | 70% | 0,489 | 70% |
+| fase 2 | híbrido | 50% | 67% | 73% | 0,434 | **97%** |
+
+### Grupo novas (27 perguntas; a linha de base não tem como respondê-las)
+
+| coleção | modo | hit@3 | hit@5 | hit@10 | MRR | hit@ctx |
+|---|---|---|---|---|---|---|
+| base | semântico / híbrido | 0% | 0% | 4% | 0,004 | 4% |
+| fase 2 | semântico | 63% | 78% | 81% | 0,499 | 81% |
+| fase 2 | híbrido | 37% | 48% | 63% | 0,346 | **85%** |
+
+(Na linha de base, 26 das 27 perguntas novas têm evidência **inexistente no índice**; na fase 2, 0.)
+
+### Hipótese: injeção de cronograma por metadado (`--crono-por-meta`, não é o `nucleo.py`)
+
+| coleção | grupo | modo | hit@3 | hit@5 | hit@10 | MRR | hit@ctx |
+|---|---|---|---|---|---|---|---|
+| fase 2 | legado | híbrido | 57% | 77% | **90%** | 0,465 | 97% |
+| fase 2 | novas | híbrido | 37% | 52% | **81%** | 0,364 | 85% |
+
+### Tamanho do contexto do híbrido (vai inteiro para o LLM; `num_ctx=8192`)
+
+| coleção | grupo | chunks (média / máx) | caracteres (média / máx) | tokens estimados (média / máx) |
+|---|---|---|---|---|
+| base | legado | 10,8 / 16 | 7.153 / 16.857 | 2.044 / 4.816 |
+| fase 2 | legado | 11,9 / 24 | 7.195 / 20.437 | 2.056 / 5.839 |
+| fase 2 | novas | 12,3 / 24 | 10.666 / 20.400 | 3.047 / 5.829 |
+
+O pior caso (≈ 5,8 mil tokens estimados) fica abaixo de `num_ctx` menos a resposta (1024) e o prompt, mas com folga pequena. Com `--crono-por-meta` o máximo cai para 16 chunks / 3,9 mil tokens.
+
+### Perguntas que ainda falham em k = 10 (fase 2, fluxo atual)
+
+**Híbrido (fluxo atual de `nucleo.responder()`) — 18 perguntas falham em k = 10**
+
+| id | grupo | menor k em que a evidência apareceu | chunks no contexto | 3 primeiros chunks (id · tipo · seção · 80 caracteres) |
+|---|---|---|---|---|
+| B08 | legado | k=19 | 24 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`f88b2371` · corpo · 1 · primeiro semestre de 2027 nos cursos dos campi do IFRS, não sendo válido para in<br>`ec9cfb75` · cronograma · 2 · Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições e solicitação de ise |
+| C01 | legado | k=18 | 20 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`2aba6920` · cronograma · 2 · Data: 14 a 18/11/2026 \| Evento: Período para as/os candidatas/candidatos autodec<br>`4b48f8b1` · cronograma · 2 · Data: De 20 a 22/11/2026 \| Evento: Período para realização de recursos (pedidos  |
+| C02 | legado | k=14 | 23 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`f88b2371` · corpo · 1 · primeiro semestre de 2027 nos cursos dos campi do IFRS, não sendo válido para in<br>`ec9cfb75` · cronograma · 2 · Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições e solicitação de ise |
+| C04 | legado | k=11 | 20 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`f88b2371` · corpo · 1 · primeiro semestre de 2027 nos cursos dos campi do IFRS, não sendo válido para in<br>`ec9cfb75` · cronograma · 2 · Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições e solicitação de ise |
+| C06 | legado | k=14 | 22 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`f88b2371` · corpo · 1 · primeiro semestre de 2027 nos cursos dos campi do IFRS, não sendo válido para in<br>`ec9cfb75` · cronograma · 2 · Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições e solicitação de ise |
+| C07 | legado | k=13 | 22 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`f88b2371` · corpo · 1 · primeiro semestre de 2027 nos cursos dos campi do IFRS, não sendo válido para in<br>`ec9cfb75` · cronograma · 2 · Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições e solicitação de ise |
+| D02 | legado | k=14 | 20 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`f88b2371` · corpo · 1 · primeiro semestre de 2027 nos cursos dos campi do IFRS, não sendo válido para in<br>`2aba6920` · cronograma · 2 · Data: 14 a 18/11/2026 \| Evento: Período para as/os candidatas/candidatos autodec |
+| E02 | legado | não recuperada | 6 | `e075f0fe` · corpo · 20 · 20.1.10 Campus Ibirubá: Endereço: Rua Nelsi Ribas Fritsch, 1111- Bairro Esperanç<br>`b5b87fcf` · corpo · 2 · *As informações referentes ao cronograma estarão disponíveis na página ingresso. |
+| E03 | novas | não recuperada | 10 | `8f4be260` · corpo · 7 · possível realizar o pagamento da taxa de inscrição após o prazo. 7.6.1. Caso dei<br>`dbddab29` · corpo · 11 · 11.6. A/O candidata/candidato poderá levar uma garrafa de água para seu consumo <br>`35de5046` · corpo · 1 · DO PROCESSO SELETIVO • 4. INFORMAÇÕES DAS VAGAS E COTAS • 5. DOS CURSOS, VAGAS E |
+| E04 | novas | k=14 | 20 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`2aba6920` · cronograma · 2 · Data: 14 a 18/11/2026 \| Evento: Período para as/os candidatas/candidatos autodec<br>`4b48f8b1` · cronograma · 2 · Data: De 20 a 22/11/2026 \| Evento: Período para realização de recursos (pedidos  |
+| F10a | novas | k=14 | 16 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`f88b2371` · corpo · 1 · primeiro semestre de 2027 nos cursos dos campi do IFRS, não sendo válido para in<br>`ec9cfb75` · cronograma · 2 · Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições e solicitação de ise |
+| F10c | novas | não recuperada | 18 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`f88b2371` · corpo · 1 · primeiro semestre de 2027 nos cursos dos campi do IFRS, não sendo válido para in<br>`ec9cfb75` · cronograma · 2 · Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições e solicitação de ise |
+| F11a | novas | não recuperada | 10 | `dcd678b2` · corpo · 11 · horário de Brasília para os cursos Subsequentes e de Graduação. 11.4. O portão d<br>`af2163e6` · corpo · 11 · os cursos Integrados, Concomitantes e Concomitantes/Subsequente; 11.25.2. 3 hora<br>`6c6d3c7d` · corpo · 11 · III. Selecionar, relacionar, organizar e interpretar informações, fatos, opiniõe |
+| F12a | novas | k=11 | 20 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`f88b2371` · corpo · 1 · primeiro semestre de 2027 nos cursos dos campi do IFRS, não sendo válido para in<br>`ec9cfb75` · cronograma · 2 · Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições e solicitação de ise |
+| F13a | novas | k=13 | 19 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`f88b2371` · corpo · 1 · primeiro semestre de 2027 nos cursos dos campi do IFRS, não sendo válido para in<br>`ec9cfb75` · cronograma · 2 · Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições e solicitação de ise |
+| F15a | novas | k=15 | 24 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`f88b2371` · corpo · 1 · primeiro semestre de 2027 nos cursos dos campi do IFRS, não sendo válido para in<br>`ec9cfb75` · cronograma · 2 · Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições e solicitação de ise |
+| F16a | novas | k=18 | 21 | `bbe12232` · corpo · 1 · 1.7 A/o candidata/candidato poderá escolher apenas um modo de ingresso. Quando h<br>`f88b2371` · corpo · 1 · primeiro semestre de 2027 nos cursos dos campi do IFRS, não sendo válido para in<br>`ec9cfb75` · cronograma · 2 · Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições e solicitação de ise |
+| F17b | novas | não recuperada | 10 | `b66f3f19` · corpo · 16 · em duas etapas: 16.5.1. Primeira Chamada: serão analisadas a documentação de mat<br>`875f34c3` · corpo · 17 · utilizará na Chamada Pública os Formulários Preenchidos e a documentação enviada<br>`3206b5f5` · corpo · 17 · 17. O QUE É E COMO FUNCIONA A CHAMADA PÚBLICA 17.1. A Chamada Pública é a última |
+
+**Semântico puro — 14 perguntas falham em k = 10**
+
+| id | grupo | menor k em que a evidência apareceu | chunks no contexto | 3 primeiros chunks (id · tipo · seção · 80 caracteres) |
+|---|---|---|---|---|
+| A01 | legado | não recuperada | 10 |  |
+| B01 | legado | não recuperada | 10 |  |
+| B02 | legado | não recuperada | 10 |  |
+| B03 | legado | não recuperada | 10 | `e075f0fe` · corpo · 20 · 20.1.10 Campus Ibirubá: Endereço: Rua Nelsi Ribas Fritsch, 1111- Bairro Esperanç |
+| B09 | legado | não recuperada | 10 |  |
+| B12 | legado | não recuperada | 10 |  |
+| C03 | legado | não recuperada | 10 | `66766ecd` · corpo · 11 · solicitado prova em condição especial). A Comissão Permanente de Seleção poderá <br>`6c6d3c7d` · corpo · 11 · III. Selecionar, relacionar, organizar e interpretar informações, fatos, opiniõe<br>`913d47d6` · corpo · 11 · 11.33. Ao concluir a prova, a/o última/último candidata/candidato de cada sala d |
+| C05 | legado | não recuperada | 10 | `556238a0` · corpo · 15 · se classificado até o limite da quantidade de vagas destinadas ao acesso univers<br>`18f76e9c` · corpo · 14 · por curso, encontram-se no Anexo IX. 14.4. A Classificação será realizada: 14.4.<br>`35de5046` · corpo · 1 · DO PROCESSO SELETIVO • 4. INFORMAÇÕES DAS VAGAS E COTAS • 5. DOS CURSOS, VAGAS E |
+| E02 | legado | não recuperada | 10 |  |
+| E03 | novas | não recuperada | 10 | `8f4be260` · corpo · 7 · possível realizar o pagamento da taxa de inscrição após o prazo. 7.6.1. Caso dei<br>`dbddab29` · corpo · 11 · 11.6. A/O candidata/candidato poderá levar uma garrafa de água para seu consumo <br>`35de5046` · corpo · 1 · DO PROCESSO SELETIVO • 4. INFORMAÇÕES DAS VAGAS E COTAS • 5. DOS CURSOS, VAGAS E |
+| E04 | novas | não recuperada | 10 | `f88b2371` · corpo · 1 · primeiro semestre de 2027 nos cursos dos campi do IFRS, não sendo válido para in<br>`35de5046` · corpo · 1 · DO PROCESSO SELETIVO • 4. INFORMAÇÕES DAS VAGAS E COTAS • 5. DOS CURSOS, VAGAS E<br>`00532c5d` · corpo · 6 · finalizar da inscrição aparecerá uma mensagem informando se sua solicitação foi  |
+| F10c | novas | não recuperada | 10 | `b8f83e71` · corpo · 10 · 10. REALIZAÇÃO DA COMISSÃO DE HETEROIDENTIFICAÇÃO 10.1. De acordo com a Instruçã<br>`de13242b` · corpo · 10 · II. declaração de pertencimento à Comunidade Quilombola (Anexo XIV) assinado por<br>`76ef12cf` · corpo · 17 · candidata/candidato que não comprovar os requisitos para a ocupação de vaga rese |
+| F11a | novas | não recuperada | 10 | `dcd678b2` · corpo · 11 · horário de Brasília para os cursos Subsequentes e de Graduação. 11.4. O portão d<br>`af2163e6` · corpo · 11 · os cursos Integrados, Concomitantes e Concomitantes/Subsequente; 11.25.2. 3 hora<br>`6c6d3c7d` · corpo · 11 · III. Selecionar, relacionar, organizar e interpretar informações, fatos, opiniõe |
+| F17b | novas | não recuperada | 10 | `b66f3f19` · corpo · 16 · em duas etapas: 16.5.1. Primeira Chamada: serão analisadas a documentação de mat<br>`875f34c3` · corpo · 17 · utilizará na Chamada Pública os Formulários Preenchidos e a documentação enviada<br>`3206b5f5` · corpo · 17 · 17. O QUE É E COMO FUNCIONA A CHAMADA PÚBLICA 17.1. A Chamada Pública é a última |
+
+Quase todas as falhas do híbrido são perguntas sobre datas ou sobre assuntos cuja pergunta contém palavras de `_PALAVRAS_CRONOGRAMA` ("inscrição", "quando", "prazo", "período", "data"), que disparam a injeção do cronograma: o chunk certo está no contexto, mas em posição > 10 (a coluna "menor k" mostra onde). As que **não** estão no contexto (E02, E03, F10c, F11a, F17b: `hit@ctx` do grupo novo = 85%; do legado, só E02) são falhas de ranking semântico: a pergunta tem pouca sobreposição lexical com o trecho (ex.: "A que horas começa a prova?" não recupera o item 11.3). E02 ("Liste todos os cursos…") falha igual à fase 1: nenhum termo dispara o híbrido de tabelas.
+
+## F2.6 Diagnóstico da queda de ranking no grupo legado
+
+Medido com variantes temporárias da primeira construção da fase 2 (cópia dos embeddings, sem reembedar):
+
+| Variante | Resultado (grupo legado) | Conclusão |
+|---|---|---|
+| fase 2, sem os 32 chunks de legenda | semântico hit@10 70% → 73%; híbrido sem mudança | legenda pesa pouco |
+| gravação em ordem de página (adotada) | híbrido hit@10 70% → 73%; C03 10→5, C05 12→6 | ajuda; aplicada no `indexar.py` |
+| sem o chunk do Anexo IX do Ibirubá | MRR +0,005 | efeito pequeno; mantido |
+| injeção de cronograma por metadado (`tipo`) | híbrido 57 / 83 / 90, MRR 0,465 (final: 57 / 77 / 90) | **explica a queda** |
+
+**Mecanismo.** `nucleo.responder()` injeta *todos* os chunks "cronograma-like" (contêm "cronograma" ou ≥ 3 datas) **antes** dos resultados semânticos. Na fase 1 eram 6 (todos do próprio cronograma). Agora são 14: 6 de cronograma e 8 de corpo que apenas citam "conforme o cronograma do item 2" (seções 1, 2, 10, 11, 13, 16). O chunk certo desce para as posições 11 a 19 e o contexto cresce de ~11 para ~20 a 24 chunks. O teto (`hit@ctx`) não muda; é custo de ranking e de tokens.
+
+Também contribui o tamanho do chunk: uma linha de cronograma passou a ficar em chunks de ~6 linhas (embedding mais "diluído" que o chunk de 150 palavras antigo), o que explica as perdas do modo semântico em C03, C05 e C06. Isso é efeito do que foi pedido (chunks de ~6 linhas) e só importa no modo semântico puro, que a produção não usa sozinho.
+
+## F2.7 Riscos e decisões pendentes (para você)
+
+1. **`nucleo.py` (fora do escopo desta fase).** Recomendo duas mudanças pequenas e independentes do índice: (a) `cronograma_docs` por `meta["tipo"] == "cronograma"` (com a heurística atual só como fallback para índices antigos), o que restaura o híbrido legado para 57 / 77 / 90 e leva o grupo novo a 81% em k=10; (b) o pós-filtro de cotas (`nucleo.py:502-510`) descarta, na consulta, todo chunk não-tabela com `C<n>:`, ou seja, os **32 chunks com esse padrão (30 de legenda e 2 do Anexo I, a legenda C1–C10 do edital)** nunca chegam ao LLM. Enquanto isso não mudar, as legendas ocupam posições do top-k semântico sem benefício.
+2. **Texto oculto das legendas** (branco, 1 pt): confirmar que pode ser indexado (F2.2).
+3. **Filtro de cotas removido do indexador.** Era o que mantinha os parágrafos "C1:…" fora do índice. Foi removido para preservar as legendas pedidas. Se a decisão for não indexar a "descrição das vagas", basta descartar chunks `tipo=legenda` que contenham `C<n>:`.
+4. **Anexo IX** sem cabeçalho de colunas (F2.2).
+5. **Extração dependente do formato do edital:** cabeçalhos de campus nos dois formatos conhecidos, títulos de nível 1 em caixa alta, lista de cursos do Ibirubá (`_CURSOS_IBIRUBA`, a atualizar a cada edital). Se o próximo edital mudar de formato, o portão de cobertura falha em vez de indexar menos.
+6. **Reindexação de produção não foi executada.** `python indexar.py` grava em `PASTA_CHROMA` (padrão `./chroma_data`); se a cobertura falhar ele sai com código 1 e preserva o índice atual. O app (`documentos_page.py`) captura a exceção e mostra o erro.
+7. As versões usadas foram haystack-ai 3.4.0, chroma-haystack 5.0.0, pdfplumber 0.11.10 (venv fora do repositório). `requirements.txt` só fixa mínimos; o `page_number` sobrescrito e o texto extraído podem variar em outra versão.
+8. `PIPELINE.md` (seções 1 a 3, descrição do pipeline) ainda descreve a indexação anterior; não foi reescrito nesta fase.
+
+## F2.8 Fase 3 (não feita)
+
+Mudança de chunker (por seção/subitem, sem corte no meio de frase), prefixos `passage:`/`query:`, `distance_function="cosine"` e contexto (título da seção) prependido por chunk. Pré-requisitos já atendidos pelas Partes A a D: índice sem lixo, metadados de seção e página, cronograma estruturado e gabarito com grupos separados. As falhas semânticas restantes (F2.5) são o alvo natural. Decisão sobre F2.7 (1) antes de medir a fase 3, para não confundir efeito de chunking com efeito da injeção.
+
+## F2.9 Reprodução
+
+```
+# coleção temporária (nunca ./chroma_data)
+python -c "import indexar; indexar.indexar_documentos('./documentos', './chroma_exp_fase2')"
+# avaliação
+python avaliar_retrieval.py --run base=./chroma_exp_prod --legado base --run fase2=./chroma_exp_fase2
+python avaliar_retrieval.py --run base=./chroma_exp_prod --legado base --run fase2=./chroma_exp_fase2 --crono-por-meta --saida retrieval_resultado_meta
+```

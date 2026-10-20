@@ -252,14 +252,27 @@ em produção — especialmente as datas, que podem mudar de versão para versã
 aparecer no contexto recuperado para que a pergunta seja *respondível*, separados por ` ; `
 (todos devem estar presentes na união dos textos dos k primeiros chunks; comparação sem
 distinção de maiúsculas e com espaços/quebras de linha colapsados). Dentro da célula, `|` e `*`
-literais aparecem escapados (`\|`, `\*`). Perguntas negativas (D01, D03) e perguntas com
-gabarito duvidoso (E03, E04) ficam com a célula vazia e são ignoradas nas métricas.
-**D02:** o item 7.4 do edital informa as taxas (R$ 40,00 / R$ 80,00 / R$ 110,00), portanto a
-"resposta esperada" desta linha (isenção/ausência de taxa) contradiz o PDF; a coluna EVIDENCIA traz
-os valores literais e a resposta esperada deve ser revista pelo responsável pelo gabarito.
-Para os blocos A/B/E o trecho é a linha de tabela como é indexada
-(`Curso: … | Turnos: … | Duração (semestres): … | Total de Vagas: …`), conferida contra as
-tabelas do Anexo II/IV/V do Campus Ibirubá; para o bloco C é o texto do item 2 do edital.
+literais aparecem escapados (`\|`, `\*`).
+
+**Convenções da fase 2**
+- `NEGATIVA` na coluna EVIDENCIA marca pergunta negativa (D01, D03): não entra nas métricas de
+  retrieval; é avaliada só pela resposta ("Não encontrei essa informação nos documentos.").
+- Coluna `EVIDENCIA_LEGADO` (bloco C): evidência da fase 1, escrita para o formato antigo do índice
+  (texto bruto do cronograma, com data e evento intercalados). Só é usada para avaliar a coleção de
+  linha de base (`--legado`); a coluna `EVIDENCIA` vale para o índice da fase 2.
+- O `avaliar_retrieval.py` separa as **30 perguntas antigas** (A01–A08, B01–B12, C01–C07, D02, E01,
+  E02: grupo `legado`) das **novas** (F10a–F18c, E03, E04, E05: grupo `novas`); as métricas dos dois
+  grupos nunca são misturadas.
+- Evidências do cronograma no índice da fase 2 seguem o formato das linhas reconstruídas:
+  `Data: <data> | Evento: <evento>`. Isso as torna únicas (a data fica ligada ao evento certo).
+- **D02:** o item 7.4 do edital informa as taxas (R$ 40,00 / R$ 80,00 / R$ 110,00); a resposta esperada
+  anterior (isenção/ausência de taxa) contradizia o PDF e foi corrigida.
+- **E03** (o que preciso para me inscrever) e **E05** (quais documentos para a matrícula) substituem a
+  antiga E03, que misturava inscrição (gov.br/CPF, item 7.2) e matrícula (seção 18 e Anexo XII).
+- Para os blocos A/B/E o trecho é a linha de tabela como é indexada
+  (`Curso: … | Turnos: … | Duração (semestres): … | Total de Vagas: …`), conferida contra as
+  tabelas do Anexo II/IV/V do Campus Ibirubá; para o bloco C é uma linha do cronograma (item 2);
+  para o bloco F é texto literal das seções 10 a 18 (uma única ocorrência no PDF).
 
 ---
 
@@ -299,15 +312,18 @@ tabelas do Anexo II/IV/V do Campus Ibirubá; para o bloco C é o texto do item 2
 
 ### Bloco C — Datas e cronograma (Edital 2027, datas de 2026)
 
-| # | Pergunta | Resposta esperada (palavras-chave obrigatórias) | NAO DEVE CONTER | EVIDENCIA |
-|---|---|---|---|---|
-| C01 | Quando são as inscrições para o processo seletivo? | 30/09 a 19/10/2026 |  | 30/09 a ; 19/10/2026 |
-| C02 | Quando acontece a aplicação das provas? | 06/12/2026 |  | 06/12/2026 Aplicação das provas |
-| C03 | Qual é o prazo para recurso após as provas? | 07 a 08/12/2026 |  | 07 e ; 08/12/2026 |
-| C04 | Quando são publicados os locais de prova? | 27/11/2026 |  | Divulgação dos locais de prova ; 27/11/2026 |
-| C05 | Quando é publicada a Classificação Geral e Aprovados? | 05/01/2027 |  | 05/01/2027 ; Classificação Geral e Aprovados |
-| C06 | Quando é a Chamada Pública? | 27/01/2027 |  | Publicação da Chamada Pública (Sorteio e Prova) ; 27/01/2027 |
-| C07 | Qual é a data limite para resultado final da matrícula na Chamada Pública? | até 03/02/2027 |  | resultado final da matrícula na Chamada Pública ; 03/02/2027 |
+| # | Pergunta | Resposta esperada (palavras-chave obrigatórias) | NAO DEVE CONTER | EVIDENCIA | EVIDENCIA_LEGADO |
+|---|---|---|---|---|---|
+| C01 | Quando são as inscrições para o processo seletivo? | 30/09 a 19/10/2026 |  | Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições e solicitação de isenção | 30/09 a ; 19/10/2026 |
+| C02 | Quando acontece a aplicação das provas? | 06/12/2026 |  | Data: 06/12/2026 \| Evento: Aplicação das provas | 06/12/2026 Aplicação das provas |
+| C03 | Qual é o prazo para recurso após as provas? | 07 a 08/12/2026 |  | Data: 07 e 08/12/2026 \| Evento: Período para realização de recursos (pedidos de revisão, questionamentos) quanto ao gabarito das provas | 07 e ; 08/12/2026 |
+| C04 | Quando são publicados os locais de prova? | 27/11/2026 |  | Data: 27/11/2026 \| Evento: Divulgação dos locais de prova | Divulgação dos locais de prova ; 27/11/2026 |
+| C05 | Quando é publicada a Classificação Geral e Aprovados? | 05/01/2027 |  | Data: 05/01/2027 \| Evento: Publicação da Classificação Geral e Aprovados em 1ª Chamada | 05/01/2027 ; Classificação Geral e Aprovados |
+| C06 | Quando é a Chamada Pública? | 27/01/2027 |  | Data: 27/01/2027 \| Evento: Publicação da Chamada Pública (Sorteio e Prova) | Publicação da Chamada Pública (Sorteio e Prova) ; 27/01/2027 |
+| C07 | Qual é a data limite para resultado final da matrícula na Chamada Pública? | até 03/02/2027 |  | Data: Até 03/02/2027 \| Evento: Publicação do resultado final da matrícula na Chamada Pública | resultado final da matrícula na Chamada Pública ; 03/02/2027 |
+
+> C03, C04 e C06 tinham evidência ambígua na fase 1 ("27/01/2027" aparece em duas linhas do cronograma e
+> "Divulgação dos locais de prova" em dois trechos). Na fase 2 a evidência é a linha inteira "Data | Evento".
 
 ---
 
@@ -315,9 +331,9 @@ tabelas do Anexo II/IV/V do Campus Ibirubá; para o bloco C é o texto do item 2
 
 | # | Pergunta | Resposta esperada | NAO DEVE CONTER | EVIDENCIA |
 |---|---|---|---|---|
-| D01 | O campus Ibirubá oferece curso de Direito? | "Não encontrei essa informação nos documentos." |  |  |
-| D02 | Qual é o valor da taxa de inscrição? | Resposta deve mencionar isenção ou ausência de taxa; **não deve** inventar um valor |  | R$ 40,00 ; R$ 80,00 ; R$ 110,00 |
-| D03 | Há curso de Tecnologia em Análise e Desenvolvimento de Sistemas? | "Não encontrei essa informação nos documentos." |  |  |
+| D01 | O campus Ibirubá oferece curso de Direito? | "Não encontrei essa informação nos documentos." (pergunta negativa) |  | NEGATIVA |
+| D02 | Qual é o valor da taxa de inscrição? | R$ 40,00 (Sorteio ou ENEM), R$ 80,00 (Prova, cursos técnicos) e R$ 110,00 (Prova, Graduação); item 7.4 do edital. Isenção para famílias de baixa renda no CadÚnico (seção 6); sem taxa nos cursos EJA (7.5) |  | R$ 40,00 ; R$ 80,00 ; R$ 110,00 |
+| D03 | Há curso de Tecnologia em Análise e Desenvolvimento de Sistemas? | "Não encontrei essa informação nos documentos." (pergunta negativa: o curso existe em outros campi, não no Ibirubá) |  | NEGATIVA |
 
 ---
 
@@ -330,8 +346,46 @@ tabelas do Anexo II/IV/V do Campus Ibirubá; para o bloco C é o texto do item 2
 |---|---|---|---|---|
 | E01 | Quantos cursos técnicos existem no total? | 4 quatro | Geoprocessamento, Edificações, Administração, Agroindústria, Segurança do Trabalho | Curso: Técnico em Agropecuária ; Curso: Técnico em Informática ; Curso: Técnico em Mecânica ; Curso: Técnico em Eletrotécnica |
 | E02 | Liste todos os cursos do campus Ibirubá | Agropecuária, Informática, Mecânica, Eletrotécnica, Agronomia, Matemática | | Curso: Técnico em Agropecuária ; Curso: Técnico em Informática ; Curso: Técnico em Mecânica ; Curso: Técnico em Eletrotécnica ; Curso: Bacharelado em Agronomia ; Curso: Bacharelado em Ciência da Computação ; Curso: Bacharelado em Engenharia Mecânica ; Curso: Licenciatura em Matemática |
-| E03 | Quais documentos preciso para me inscrever? | documento, identidade, cpf | |  |
-| E04 | Quais são as datas do processo seletivo? (sem especificar ano) | 2026, 2027 | 2025 |  |
+| E03 | O que preciso para me inscrever no processo seletivo? | internet, ingresso.ifrs.edu.br, gov.br, cpf | | exclusivamente via INTERNET no endereço ingresso.ifrs.edu.br ; para autenticar-se com seu CPF e senha |
+| E04 | Quais são as datas do processo seletivo? (sem especificar ano) | 2026, 2027 | 2025 | Data: De 30/09 a 19/10/2026 \| Evento: Período de inscrições ; Data: 06/12/2026 \| Evento: Aplicação das provas ; Data: 05/01/2027 \| Evento: Publicação da Classificação Geral e Aprovados ; Data: Até 03/02/2027 \| Evento: Publicação do resultado final da matrícula na Chamada Pública |
+| E05 | Quais documentos preciso apresentar para a matrícula? | identidade, cpf, ensino | | CONVOCADOS PARA MATRÍCULA, EM QUALQUER UM DOS CURSOS, DEVEM APRESENTAR ; Carteira de identidade ou documento equivalente ; Documento onde conste o nº do CPF |
+
+> E04 é um marco de cada fase do processo (inscrição, prova, classificação, resultado final), não o cronograma
+> completo; as quatro linhas estão em chunks diferentes, então só é "respondível" com o cronograma todo no contexto.
+
+---
+
+### Bloco F — Seções 10 a 18 do edital (fase 2)
+
+> Perguntas novas, sem equivalente na linha de base da fase 1 (as 30 perguntas antigas ficam nos blocos A–E).
+> Cada EVIDENCIA é literal e foi conferida no texto do PDF (uma única ocorrência no documento).
+
+| # | Pergunta | Resposta esperada (palavras-chave obrigatórias) | NAO DEVE CONTER | EVIDENCIA |
+|---|---|---|---|---|
+| F10a | Qual documento a candidata autodeclarada negra deve apresentar à Comissão de Heteroidentificação? | documento de identificação com foto; não aceitos danificados, vencidos ou com mais de 10 anos | | Comissão de Heteroidentificação um documento de identificação com foto ; mais de 10 anos de emissão |
+| F10b | Qual critério a Comissão de Heteroidentificação utiliza para verificar a autodeclaração? | fenótipo (características físicas) | | exclusivamente, o critério fenótipo |
+| F10c | O que acontece com a candidata que não tem a autodeclaração confirmada pela comissão? | reclassificada para o acesso universal (cota 1) | | Heteroidentificação serão reclassificados para o acesso universal (cota 1) |
+| F11a | A que horas começa a prova? | 8h30min (Integrados, Concomitantes e Concomitantes/Subsequentes); 14h (Subsequentes e Graduação) | | 8h30min (oito horas e trinta minutos) ; 14h (catorze horas) |
+| F11b | Quantas questões tem a prova dos cursos de graduação? | 45 questões objetivas e uma redação | | 45 (quarenta e cinco) questões objetivas e uma redação |
+| F11c | Qual é a duração da prova dos cursos de graduação? | 4 horas e 30 minutos | | 4 horas e 30 minutos para os cursos de Graduação |
+| F11d | Quais documentos de identificação são aceitos na prova? | Carteira de identidade, Certificado de Reservista, Carteira funcional, Carteira de Trabalho, Passaporte ou CNH | | Certificado de Reservista com foto ; V. Passaporte; ou VI. Carteira Nacional de Habilitação |
+| F12a | Qual é o período para recurso do gabarito da prova? | 07 a 08 de dezembro de 2026 | | recurso no período de 07 a 08 de dezembro de 2026 |
+| F12b | Como faço o recurso do gabarito? | Formulário de Recursos (link forms.gle) | | O recurso deve ser realizado por meio do preenchimento do Formulário de Recursos no link |
+| F13a | Quando e a que horas acontece o sorteio público? | 10 de dezembro de 2026, às 14h30min | | dia 10 de dezembro de 2026, com início às 14h30min |
+| F13b | Onde o sorteio público é transmitido? | Canal Oficial do IFRS no YouTube | | transmitido publicamente pelo Canal Oficial do IFRS no youtube |
+| F14a | Como é calculada a nota final dos cursos de graduação? | média ponderada; pesos no Anexo IX | | média ponderada das notas de cada disciplina ; encontram-se no Anexo IX |
+| F14b | Qual é o critério de desempate nos cursos técnicos? | maior idade (maior de 60 anos); maior nota em Linguagens, Códigos e suas Tecnologias | | maior de 60 anos empatado ; Maior nota em Linguagens, Códigos e suas Tecnologias |
+| F14c | Quem é eliminado do processo seletivo na classificação? | quem não acertou ao menos uma questão ou tirou nota zero na redação | | não tiver acertado ao menos uma questão da prova ; tiver tirado nota zero na prova de redação |
+| F15a | Quando o candidato recebe o status de aprovado? | classificado até o limite de vagas do acesso universal | | classificado até o limite da quantidade de vagas destinadas ao acesso universal |
+| F15b | O que acontece com as vagas da cota 10 se não houver inscritos? | migram para o Acesso Universal (Cota 1) | | migrarão para o Acesso Universal (Cota 1) |
+| F16a | Em que período devo enviar a documentação de matrícula na Primeira Chamada? | 06 a 12 de janeiro de 2027 | | No período de 06 a 12 de janeiro de 2027 |
+| F16b | Como acesso o Sistema de Pré-Matrícula? | login e senha do gov.br | | com seu login e senha do gov.br |
+| F16c | O que acontece com quem não registra presença na Pré-Matrícula? | considerado ausente e perde o direito à vaga | | considerado ausente e perderá o direito à vaga |
+| F17a | O que é a Chamada Pública? | última chamada para matrícula, após a primeira chamada | | A Chamada Pública é a última chamada para matrícula |
+| F17b | Cabe recurso da análise da documentação na Chamada Pública? | Não cabe recurso | | Não caberá recurso da análise da documentação na chamada pública |
+| F18a | Que documento com CPF é exigido para a matrícula? | documento oficial com foto e CPF do próprio candidato | | documento oficial com foto e o número de Cadastro de Pessoa Física (CPF) |
+| F18b | O que acontece se houver documentos faltantes ou ilegíveis na matrícula? | não será efetuada a matrícula | | Não será efetuada a matrícula caso haja documentos faltantes ou ilegíveis |
+| F18c | Onde está a relação de documentos obrigatórios para a matrícula? | Anexo XII | | conforme especificado no Anexo XII |
 
 ---
 
