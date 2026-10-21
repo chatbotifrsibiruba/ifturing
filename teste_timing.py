@@ -39,7 +39,7 @@ from nucleo import (
     MODELOS, MODELO_PADRAO_SIMPLES,
     perguntar_llm,
     _OllamaOffline, _MSG_OLLAMA_OFFLINE,
-    _PADRAO_COTA, _PADRAO_DATA_RECENTE,
+    _PADRAO_COTA, selecionar_cronograma,
     _buscar_tabelas_por_keyword,
     _buscar_cronograma_por_keyword,
 )
@@ -71,14 +71,7 @@ def carregar_pipeline():
     t0 = time.perf_counter()
     todos = document_store.filter_documents()
     tabela_docs = [d for d in todos if (d.meta or {}).get("tipo") == "tabela"]
-    cronograma_docs = [
-        d for d in todos
-        if (d.meta or {}).get("tipo") != "tabela"
-        and (
-            "cronograma" in (d.content or "").lower()
-            or len(_PADRAO_DATA_RECENTE.findall(d.content or "")) >= 3
-        )
-    ]
+    cronograma_docs = selecionar_cronograma(todos)
     print(f"OK — {len(tabela_docs)} tabelas, {len(cronograma_docs)} cronograma "
           f"em {time.perf_counter() - t0:.3f}s")
 

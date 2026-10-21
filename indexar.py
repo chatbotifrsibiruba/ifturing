@@ -123,7 +123,6 @@ _CURSOS_IBIRUBA: frozenset = frozenset({
 })
 
 _PADRAO_COTA = re.compile(r"C\d{1,2}:")                 # só estatística (o filtro de cotas foi removido)
-_PADRAO_DATA_RECENTE = re.compile(r"\d{1,2}/\d{2}/202[4-9]")
 _TOKEN = re.compile(r"\w+", re.UNICODE)
 
 
@@ -487,8 +486,7 @@ def _agrupar_cronograma(linhas: list) -> list:
         palavras += n
     if atual:
         grupos.append(atual)
-    # Todo chunk de cronograma deve ter >= _CRONO_MIN_LINHAS datas: assim ele também satisfaz a
-    # heurística "cronograma-like" de nucleo.py (>= 3 datas dd/mm/202x) e entra no híbrido.
+    # Nenhum chunk de cronograma fica com menos de _CRONO_MIN_LINHAS linhas (evita um último chunk minúsculo).
     if len(grupos) > 1 and len(grupos[-1]) < _CRONO_MIN_LINHAS:
         falta = _CRONO_MIN_LINHAS - len(grupos[-1])
         grupos[-1] = grupos[-2][-falta:] + grupos[-1]
@@ -661,7 +659,7 @@ def _processar_pdf(caminho_pdf: str) -> dict:
                     split_id=0, split_idx_start=0)))
 
     # Ordem do documento (página; dentro da página, o cronograma depois do corpo). A ordem de gravação
-    # é a ordem em que nucleo.py injeta os chunks "cronograma-like" no contexto do híbrido.
+    # é a ordem em que nucleo.py injeta os chunks tipo="cronograma" no contexto do híbrido (modo "todos").
     docs.sort(key=lambda d: (d.meta["pagina_ini"], d.meta["tipo"] == "cronograma"))
 
     return {"nome": nome, "docs": docs, "secoes": secoes, "info": info, "n_linhas_tabela": n_linhas_tabela,
@@ -833,16 +831,10 @@ def indexar_documentos(
     n_chunks = document_store.count_documents()
 
     por_tipo = collections.Counter(d.meta["tipo"] for d in aceitos)
-    n_crono_like = sum(
-        1 for d in aceitos
-        if d.meta["tipo"] != "tabela"
-        and ("cronograma" in d.content.lower() or len(_PADRAO_DATA_RECENTE.findall(d.content)) >= 3)
-    )
     n_cota = sum(1 for d in aceitos if d.meta["tipo"] != "tabela" and _PADRAO_COTA.search(d.content))
     print(f"\n✅ Indexação concluída! {n_chunks} chunks persistidos em {pasta_chroma}/")
     for t in ("corpo", "tabela", "cronograma", "legenda", "anexo_geral"):
         print(f"   • {t:<12}: {por_tipo.get(t, 0)}")
-    print(f"   • cronograma-like (heurística de nucleo.py): {n_crono_like}")
     print(f"   • chunks não-tabela com padrão de cota 'C<n>:' : {n_cota}  "
           f"(o pós-filtro de responder() em nucleo.py os descarta na consulta)")
     print(f"   • Rejeitados pelo portão de legibilidade: {len(rejeitados)}")

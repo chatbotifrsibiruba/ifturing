@@ -28,7 +28,7 @@ A cada `python indexar.py` o índice é **destruído e recriado do zero** (`shut
 > Após reindexação o total esperado é **~923 chunks** (só o edital 2027, 9 tabelas).
 
 Subconjunto relevante pré-carregado em memória:
-- **25 chunks de cronograma** — chunks de texto que contêm a palavra "cronograma" **ou** ≥ 3 datas no formato `dd/mm/202X` (regex `\d{1,2}/\d{2}/202[4-9]`)
+- **Chunks de cronograma** — os de `meta["tipo"] == "cronograma"` (gravados por `indexar.py`; 6 no índice da fase 2). O critério antigo (palavra "cronograma" ou ≥ 3 datas `dd/mm/202X`) foi removido: no índice da fase 2 ele pegava 14 chunks, 8 deles de corpo que só citam o cronograma, e nenhum era necessário (ver `retrieval_resultado_fase2c.md`)
 - **18 chunks de tabela** — todos os chunks com `meta["tipo"] == "tabela"`
 
 ### Parâmetros de chunking (texto normal)
@@ -186,8 +186,10 @@ Pergunta do usuário
        ▼
 [5] Retrieval híbrido de cronograma (por palavra-chave)
     dispara se a pergunta contém alguma palavra de _PALAVRAS_CRONOGRAMA
-    busca nos 25 chunks de cronograma pré-carregados
-    injeta os que não estão já no contexto semântico
+    busca nos chunks tipo="cronograma" pré-carregados
+    CRONOGRAMA_MODO="todos" (padrão): injeta o cronograma inteiro
+    CRONOGRAMA_MODO="topk": injeta só os 3 mais similares à pergunta (ranking semântico dentro do tipo)
+    em ambos, os chunks que já estão no contexto semântico não são repetidos
     posição: cronograma vai ANTES dos demais (LLM lê datas primeiro)
        │
        ▼

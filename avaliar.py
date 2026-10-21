@@ -60,7 +60,7 @@ from nucleo import (
     MODELO_EMB,
     TOP_K,
     _PADRAO_COTA,
-    _PADRAO_DATA_RECENTE,
+    selecionar_cronograma,
     _buscar_tabelas_por_keyword,
     _buscar_cronograma_por_keyword,
     perguntar_llm,
@@ -121,14 +121,7 @@ def carregar_pipeline():
 
     todos = document_store.filter_documents()
     tabela_docs = [d for d in todos if (d.meta or {}).get("tipo") == "tabela"]
-    cronograma_docs = [
-        d for d in todos
-        if (d.meta or {}).get("tipo") != "tabela"
-        and (
-            "cronograma" in (d.content or "").lower()
-            or len(_PADRAO_DATA_RECENTE.findall(d.content or "")) >= 3
-        )
-    ]
+    cronograma_docs = selecionar_cronograma(todos)
     print(f"[setup] {len(tabela_docs)} chunks de tabela pré-carregados")
     print(f"[setup] {len(cronograma_docs)} chunks de cronograma pré-carregados")
 

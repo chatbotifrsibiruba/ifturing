@@ -32,10 +32,12 @@ EMBEDDER_DEVICE = os.getenv("EMBEDDER_DEVICE", "cpu")
 # Detecta chunks que descrevem distribuição de cotas (ex: "C1:", "C10:")
 _PADRAO_COTA = re.compile(r"C\d{1,2}:")
 
-# Detecta datas recentes no formato dd/mm/202X (anos 2024-2029).
-# Usado para capturar chunks de continuação do cronograma que não contêm a palavra "cronograma"
-# mas pertencem à tabela (ex: "06/12/2026 Aplicação das provas").
-_PADRAO_DATA_RECENTE = re.compile(r"\d{1,2}/\d{2}/202[4-9]")
+# Injeção do cronograma (perguntas de data/prazo). Os chunks são os de meta tipo="cronograma"
+# gravados por indexar.py (nenhuma heurística de texto/data):
+#   "todos"  injeta o cronograma inteiro (todos os chunks tipo="cronograma")
+#   "topk"   injeta só os CRONOGRAMA_TOP_K mais similares à pergunta (ranking semântico dentro do tipo)
+CRONOGRAMA_MODO  = os.getenv("CRONOGRAMA_MODO", "todos").strip().lower()
+CRONOGRAMA_TOP_K = 3
 
 # Palavras que disparam o retrieval híbrido de cronograma/datas
 _PALAVRAS_CRONOGRAMA = frozenset({
@@ -96,15 +98,42 @@ _SINONIMOS_TIPO: dict = {
 }
 
 
+def selecionar_cronograma(todos: list) -> list:
+    """Chunks do cronograma = os de meta tipo="cronograma" (ordem de gravação = ordem do documento)."""
+    return [d for d in todos if (d.meta or {}).get("tipo") == "cronograma"]
+
+
+def cronograma_mais_similares(pipeline, embedding: list, k: int = CRONOGRAMA_TOP_K) -> list:
+    """Os k chunks tipo="cronograma" mais similares à consulta, do mais para o menos similar.
+
+    Mesma busca vetorial do retriever do pipeline (mesmo índice e métrica), restrita ao tipo.
+    """
+    retriever = pipeline.get_component("retriever")
+    return retriever.run(
+        query_embedding=embedding,
+        filters={"field": "meta.tipo", "operator": "==", "value": "cronograma"},
+        top_k=k,
+    )["documents"]
+
+
 def _buscar_cronograma_por_keyword(
     pergunta: str,
     cronograma_docs: list,
     docs_semanticos: list,
+    ranquear=None,
+    modo: str = None,
 ) -> list:
-    """Injeta chunks de texto com 'cronograma' quando a pergunta menciona datas/prazos.
+    """Injeta chunks de cronograma (meta tipo="cronograma") quando a pergunta menciona datas/prazos.
 
     Garante que o cronograma do processo seletivo entre no contexto mesmo quando o
-    score semântico não é suficiente para colocá-lo no top-K.
+    score semântico não é suficiente para colocá-lo no top-K. Chunks já presentes no
+    contexto semântico não são repetidos.
+
+    modo (padrão CRONOGRAMA_MODO):
+      "todos"  todos os chunks de cronograma, na ordem do documento
+      "topk"   só os CRONOGRAMA_TOP_K mais similares à pergunta, do mais para o menos similar;
+               exige `ranquear`, função k -> chunks ordenados por similaridade (ver
+               cronograma_mais_similares), chamada só quando a pergunta dispara o cronograma
     """
     if not cronograma_docs:
         return []
@@ -113,10 +142,19 @@ def _buscar_cronograma_por_keyword(
         if _DEBUG_HIBRIDO:
             print("[debug_hibrido] pergunta sem palavras de _PALAVRAS_CRONOGRAMA → skip cronograma")
         return []
+    modo = modo or CRONOGRAMA_MODO
+    if modo == "topk":
+        if ranquear is None:
+            raise ValueError("CRONOGRAMA_MODO='topk' exige `ranquear` (ranking semântico dentro do tipo)")
+        candidatos = ranquear(CRONOGRAMA_TOP_K)
+    elif modo == "todos":
+        candidatos = cronograma_docs
+    else:
+        raise ValueError(f"CRONOGRAMA_MODO inválido: {modo!r} (use 'todos' ou 'topk')")
     ids_semanticos = {d.id for d in docs_semanticos if d.id}
-    extras = [d for d in cronograma_docs if d.id not in ids_semanticos]
+    extras = [d for d in candidatos if d.id not in ids_semanticos]
     if _DEBUG_HIBRIDO:
-        print(f"[debug_hibrido] cronograma: {len(extras)} chunks injetados")
+        print(f"[debug_hibrido] cronograma ({modo}): {len(extras)} chunks injetados")
     return extras
 
 
@@ -305,14 +343,7 @@ def carregar_pipeline():
     try:
         todos = document_store.filter_documents()
         tabela_docs = [d for d in todos if (d.meta or {}).get("tipo") == "tabela"]
-        cronograma_docs = [
-            d for d in todos
-            if (d.meta or {}).get("tipo") != "tabela"
-            and (
-                "cronograma" in (d.content or "").lower()
-                or len(_PADRAO_DATA_RECENTE.findall(d.content or "")) >= 3
-            )
-        ]
+        cronograma_docs = selecionar_cronograma(todos)
     except Exception as _e:
         print(f"[setup] aviso ao pré-carregar docs: {_e}")
         tabela_docs = []
@@ -494,8 +525,9 @@ def responder(pergunta: str, modelo_cfg: dict, propagar_erros: bool = False) -> 
 
         # 1. Embedding da query + busca vetorial no ChromaDocumentStore
         t0 = time.perf_counter()
-        resultado = pipeline.run({"embedder": {"text": pergunta}})
+        resultado = pipeline.run({"embedder": {"text": pergunta}}, include_outputs_from={"embedder"})
         docs = resultado["retriever"]["documents"]
+        embedding_pergunta = resultado["embedder"]["embedding"]
         t_retrieval = time.perf_counter() - t0
         print(f"[timing] embed+retrieve:      {t_retrieval:.3f}s  ({len(docs)} docs recuperados)")
 
@@ -530,7 +562,10 @@ def responder(pergunta: str, modelo_cfg: dict, propagar_erros: bool = False) -> 
 
         # Retrieval híbrido: injeta chunks de cronograma quando a pergunta menciona datas/prazos
         t0_crono = time.perf_counter()
-        docs_crono_extra = _buscar_cronograma_por_keyword(pergunta, cronograma_docs, docs)
+        docs_crono_extra = _buscar_cronograma_por_keyword(
+            pergunta, cronograma_docs, docs,
+            ranquear=lambda k: cronograma_mais_similares(pipeline, embedding_pergunta, k),
+        )
         if docs_crono_extra:
             # Cronograma no início → LLM lê as datas antes do restante do contexto
             docs = docs_crono_extra + docs
