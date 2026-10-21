@@ -15,6 +15,11 @@ _diag_cronograma2.py
 _diag_cronograma.py
 _check_crono_novo.py
 resultado_modelos.*
+resultado_concorrencia.*
 retrieval_resultado.*
 retrieval_resultado_*
 /chroma_exp_*
+
+# Cache de scores do experimento de reranking (avaliar_rerank.py)
+/rerank_cache/
+rerank_run.log

@@ -5,6 +5,7 @@ Sem layout ou CSS do Streamlit.
 """
 import os
 import re
+import threading
 import time
 import unicodedata
 import traceback
@@ -24,6 +25,10 @@ load_dotenv()
 
 PASTA_CHROMA   = os.getenv("PASTA_CHROMA",  "./chroma_data")
 OLLAMA_URL     = os.getenv("OLLAMA_URL",    "http://localhost:11434")
+# Várias instâncias do Ollama (ex.: uma por GPU), separadas por vírgula. Ausente → só OLLAMA_URL (comportamento
+# de sempre). Com a lista, OLLAMA_URL passa a ser a primeira (usada por quem lê o catálogo de modelos).
+OLLAMA_URLS    = [u.strip().rstrip("/") for u in os.getenv("OLLAMA_URLS", "").split(",") if u.strip()] or [OLLAMA_URL]
+OLLAMA_URL     = OLLAMA_URLS[0]
 MODELO_OLLAMA  = os.getenv("MODELO_OLLAMA", "llama3:latest")
 MARITACA_URL   = "https://chat.maritaca.ai/api/chat/completions"
 MODELO_EMB      = "intfloat/multilingual-e5-base"
@@ -48,6 +53,16 @@ def _flag(nome: str, padrao: str = "") -> bool:
 # tiver sido construído com o mesmo E5_PREFIXOS (ver indexar.py); desligado por padrão.
 E5_PREFIXOS     = _flag("E5_PREFIXOS")
 PREFIXO_CONSULTA = "query: " if E5_PREFIXOS else ""
+
+# Reranker (cross-encoder) OPCIONAL, desligado por padrão. Com RERANKER_ATIVO=1: busca semântica de
+# RERANKER_CANDIDATOS chunks → reordena pelo score do CrossEncoder → fica com TOP_K → injeção híbrida de sempre
+# (mesmo fluxo do modo hib-todos de avaliar_rerank.py). SEMPRE fp32 (a T1000 tem fp16 a ~0,36 TFLOPS contra
+# ~1,53 em fp32) e nunca trust_remote_code. Se falhar (sem CUDA, sem memória…), segue com a ordem semântica.
+RERANKER_ATIVO      = _flag("RERANKER_ATIVO", "0")
+RERANKER_MODELO     = os.getenv("RERANKER_MODELO", "BAAI/bge-reranker-v2-m3").strip()
+RERANKER_CANDIDATOS = max(TOP_K, int(os.getenv("RERANKER_CANDIDATOS", "15") or 15))
+RERANKER_MAX_LENGTH = int(os.getenv("RERANKER_MAX_LENGTH", "256") or 256)
+RERANKER_DEVICE     = os.getenv("RERANKER_DEVICE", "cpu").strip() or "cpu"
 
 # Gatilho do cronograma (perguntas de data/prazo):
 #   "palavra"    casamento por PALAVRA INTEIRA, sem acento (padrão): termos fortes sozinhos; termos ambíguos
@@ -390,8 +405,14 @@ def listar_modelos_ollama() -> dict:
     Sempre inclui Maritaca ao final. Fallback para MODELOS fixo se o Ollama estiver inacessível."""
     _maritaca_entry = {"🌐 Sabiá-4 (Maritaca)": MODELOS["🌐 Sabiá-4 (Maritaca)"]}
     try:
-        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
-        r.raise_for_status()
+        for _i, _url in enumerate(OLLAMA_URLS):          # catálogo da primeira instância que responder
+            try:
+                r = requests.get(f"{_url}/api/tags", timeout=5)
+                r.raise_for_status()
+                break
+            except requests.exceptions.RequestException:
+                if _i == len(OLLAMA_URLS) - 1:
+                    raise
         itens = r.json().get("models", [])
         if not itens:
             return {**MODELOS, **_maritaca_entry}
@@ -465,6 +486,94 @@ def carregar_pipeline():
     return pipeline, n_chunks, tabela_docs, cronograma_docs
 
 
+# ── Reranker (opcional) ────────────────────────────────────────────────────
+_reranker_modelo = None            # singleton: CrossEncoder já em fp32
+_reranker_falhou = False           # falha ao carregar: não tenta de novo a cada pergunta
+_reranker_lock_carga = threading.Lock()
+_reranker_lock_uso = threading.Lock()      # um predict por vez (tokenizer/GPU única)
+
+
+def _reranker():
+    """CrossEncoder único, carregado na 1ª chamada; None se desligado ou se não carregou (aviso no log)."""
+    global _reranker_modelo, _reranker_falhou
+    if _reranker_modelo is not None or _reranker_falhou or not RERANKER_ATIVO:
+        return _reranker_modelo
+    with _reranker_lock_carga:
+        if _reranker_modelo is not None or _reranker_falhou:
+            return _reranker_modelo
+        try:
+            from sentence_transformers import CrossEncoder
+            t0 = time.perf_counter()
+            rr = CrossEncoder(RERANKER_MODELO, max_length=RERANKER_MAX_LENGTH,
+                              device=RERANKER_DEVICE, trust_remote_code=False)
+            rr.model.float()                       # fp32 sempre, qualquer que seja o dtype do checkpoint
+            _reranker_modelo = rr
+            print(f"[reranker] {RERANKER_MODELO} carregado em {RERANKER_DEVICE} (fp32, "
+                  f"max_length={RERANKER_MAX_LENGTH}) em {time.perf_counter() - t0:.1f}s")
+        except Exception as exc:
+            _reranker_falhou = True
+            print(f"[reranker] AVISO: não carregou ({type(exc).__name__}: {str(exc)[:200]}) — "
+                  f"seguindo com a ordem semântica")
+    return _reranker_modelo
+
+
+def reordenar_por_reranker(pergunta: str, docs: list, top_k: int = TOP_K) -> tuple:
+    """(docs, segundos, aplicado): reordena `docs` pelo score do CrossEncoder e fica com `top_k`.
+    Empate → ordem semântica. Qualquer falha devolve os `top_k` primeiros na ordem semântica."""
+    rr = _reranker()
+    if rr is None or len(docs) <= 1:
+        return docs[:top_k], 0.0, False
+    t0 = time.perf_counter()
+    try:
+        with _reranker_lock_uso:
+            scores = rr.predict([(pergunta, d.content or "") for d in docs], batch_size=16,
+                                show_progress_bar=False)
+        ordem = sorted(range(len(docs)), key=lambda i: (-float(scores[i]), i))
+        return [docs[i] for i in ordem][:top_k], time.perf_counter() - t0, True
+    except Exception as exc:
+        print(f"[reranker] AVISO: falhou ao pontuar ({type(exc).__name__}: {str(exc)[:200]}) — "
+              f"seguindo com a ordem semântica")
+        return docs[:top_k], time.perf_counter() - t0, False
+
+
+def preaquecer() -> dict:
+    """Carrega embedder e (se ativo) reranker de uma vez, para a 1ª pergunta não pagar a carga (~5 s o embedder).
+    Idempotente. Devolve os segundos gastos em cada parte."""
+    t0 = time.perf_counter()
+    pipeline = carregar_pipeline()[0]
+    if pipeline is not None:
+        pipeline.get_component("embedder").run(text="aquecimento")     # warm_up + 1ª inferência
+    t_emb = time.perf_counter() - t0
+    t1 = time.perf_counter()
+    rr = _reranker()
+    if rr is not None:
+        try:
+            with _reranker_lock_uso:
+                rr.predict([("aquecimento", "texto de aquecimento")], batch_size=1, show_progress_bar=False)
+        except Exception as exc:          # ex.: CUDA sem memória: o app sobe e cada pergunta cai na ordem semântica
+            print(f"[reranker] AVISO: falhou no aquecimento ({type(exc).__name__}: {str(exc)[:200]})")
+    t_rr = time.perf_counter() - t1
+    print(f"[preaquecer] embedder {t_emb:.1f}s | reranker "
+          f"{'desligado' if not RERANKER_ATIVO else (f'{t_rr:.1f}s' if rr else 'indisponível')}")
+    return {"embedder_s": round(t_emb, 2), "reranker_s": round(t_rr, 2),
+            "reranker": "desligado" if not RERANKER_ATIVO else ("ok" if rr else "indisponivel")}
+
+
+# ── Ollama: escolha da instância ───────────────────────────────────────────
+_ollama_ativas = {u: 0 for u in OLLAMA_URLS}      # requisições em andamento por instância
+_ollama_fora_ate = {}                              # url → instante (monotonic) até o qual está "fora"
+_ollama_lock = threading.Lock()
+_OLLAMA_QUARENTENA_S = 30.0                        # após uma falha, a instância é preterida por este tempo
+
+
+def _ordem_ollama() -> list:
+    """Instâncias da menos para a mais ocupada (empate → ordem da lista); as que falharam há pouco vão por último."""
+    agora = time.monotonic()
+    with _ollama_lock:
+        return sorted(OLLAMA_URLS, key=lambda u: (_ollama_fora_ate.get(u, 0) > agora, _ollama_ativas[u],
+                                                  OLLAMA_URLS.index(u)))
+
+
 class _OllamaOffline(Exception):
     pass
 
@@ -491,12 +600,27 @@ def chamar_ollama(prompt: str, modelo: str) -> dict:
         "options": {"temperature": 0.0, "num_predict": 1024, "num_ctx": 8192},
     }
     t_http_inicio = time.perf_counter()
-    try:
-        r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=300)
-        r.raise_for_status()
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
-            requests.exceptions.RequestException) as _exc:
-        raise _OllamaOffline() from _exc
+    r, url_usada, ultimo_erro = None, None, None
+    for url in _ordem_ollama():                      # failover: se uma instância falha, tenta a próxima
+        with _ollama_lock:
+            _ollama_ativas[url] += 1
+        try:
+            r = requests.post(f"{url}/api/generate", json=payload,
+                              timeout=300 if len(OLLAMA_URLS) == 1 else (10, 300))
+            r.raise_for_status()
+            url_usada = url
+            break
+        except requests.exceptions.RequestException as _exc:      # conexão, timeout ou HTTP de erro
+            ultimo_erro = _exc
+            with _ollama_lock:
+                _ollama_fora_ate[url] = time.monotonic() + _OLLAMA_QUARENTENA_S
+            if len(OLLAMA_URLS) > 1:
+                print(f"[ollama] AVISO: {url} falhou ({type(_exc).__name__}) — tentando outra instância")
+        finally:
+            with _ollama_lock:
+                _ollama_ativas[url] -= 1
+    if url_usada is None:
+        raise _OllamaOffline() from ultimo_erro
     t_http = time.perf_counter() - t_http_inicio
 
     d = r.json()
@@ -531,6 +655,7 @@ def chamar_ollama(prompt: str, modelo: str) -> dict:
         "tempo_carga_s": round(t_load, 3),
         "tempo_prefill_s": round(t_prefill, 3),
         "tempo_geracao_s": round(t_gen, 3),
+        "ollama_url": url_usada,
     }
 
 
@@ -656,11 +781,21 @@ def responder(pergunta: str, modelo_cfg: dict, propagar_erros: bool = False) -> 
 
         # 1. Embedding da query + busca vetorial no ChromaDocumentStore
         t0 = time.perf_counter()
-        resultado = pipeline.run({"embedder": {"text": pergunta}}, include_outputs_from={"embedder"})
+        entrada = {"embedder": {"text": pergunta}}
+        if RERANKER_ATIVO:
+            entrada["retriever"] = {"top_k": RERANKER_CANDIDATOS}      # candidatos para o reranker
+        resultado = pipeline.run(entrada, include_outputs_from={"embedder"})
         docs = resultado["retriever"]["documents"]
         embedding_pergunta = resultado["embedder"]["embedding"]
         t_retrieval = time.perf_counter() - t0
         print(f"[timing] embed+retrieve:      {t_retrieval:.3f}s  ({len(docs)} docs recuperados)")
+
+        # Reranker (opcional): reordena os candidatos e fica com TOP_K; antes da injeção híbrida
+        t_rerank, rerank_aplicado = 0.0, False
+        if RERANKER_ATIVO:
+            docs, t_rerank, rerank_aplicado = reordenar_por_reranker(pergunta, docs)
+            print(f"[timing] reranker:            {t_rerank:.3f}s  "
+                  f"({'aplicado' if rerank_aplicado else 'NÃO aplicado — ordem semântica'}, {len(docs)} docs)")
 
         # Pós-filtro: descarta chunks de texto que descrevem distribuição de cotas
         docs_antes = len(docs)
@@ -712,6 +847,7 @@ def responder(pergunta: str, modelo_cfg: dict, propagar_erros: bool = False) -> 
                 "resposta": "⚠️ Nenhum trecho relevante encontrado nos documentos.",
                 "tempo_total_s": round(t_total, 3),
                 "tempo_retrieval_s": round(t_retrieval, 3), "tempo_llm_s": 0.0,
+                "tempo_rerank_s": round(t_rerank, 3), "rerank_aplicado": rerank_aplicado,
                 "docs_recuperados": 0, "score_max": 0.0, "score_medio": 0.0,
                 "chars_contexto": 0, "tokens_entrada": 0, "tokens_saida": 0,
                 "tokens_total": 0, "tokens_por_s": 0.0, "chars_resposta": 0,
@@ -757,6 +893,7 @@ def responder(pergunta: str, modelo_cfg: dict, propagar_erros: bool = False) -> 
                 "resposta": msg_erro,
                 "tempo_total_s": round(t_total, 3),
                 "tempo_retrieval_s": round(t_retrieval, 3), "tempo_llm_s": 0.0,
+                "tempo_rerank_s": round(t_rerank, 3), "rerank_aplicado": rerank_aplicado,
                 "docs_recuperados": len(docs),
                 "score_max": round(max(scores), 4) if scores else 0.0,
                 "score_medio": round(sum(scores) / len(scores), 4) if scores else 0.0,
@@ -780,6 +917,9 @@ def responder(pergunta: str, modelo_cfg: dict, propagar_erros: bool = False) -> 
             "resposta": texto,
             "tempo_total_s": round(t_total, 3),
             "tempo_retrieval_s": round(t_retrieval, 3),
+            "tempo_rerank_s": round(t_rerank, 3),
+            "rerank_aplicado": rerank_aplicado,
+            "ollama_url": r.get("ollama_url"),
             "tempo_llm_s": round(t_llm, 3),
             "tempo_carga_s": r.get("tempo_carga_s", 0.0),
             "tempo_prefill_s": r.get("tempo_prefill_s", 0.0),
@@ -804,6 +944,7 @@ def responder(pergunta: str, modelo_cfg: dict, propagar_erros: bool = False) -> 
         return {
             "resposta": "Ocorreu um erro temporário ao processar sua pergunta. Tente novamente em instantes.",
             "tempo_total_s": 0.0, "tempo_retrieval_s": 0.0, "tempo_llm_s": 0.0,
+            "tempo_rerank_s": 0.0, "rerank_aplicado": False,
             "docs_recuperados": 0, "score_max": 0.0, "score_medio": 0.0,
             "chars_contexto": 0, "tokens_entrada": 0, "tokens_saida": 0,
             "tokens_total": 0, "tokens_por_s": 0.0, "chars_resposta": 0,

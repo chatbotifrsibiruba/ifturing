@@ -10,7 +10,7 @@ from db import init_db, get_or_create_sessao, inserir_feedback
 from nucleo import (
     chave_modelo_padrao, indice_modelo_padrao, MODELO_EMB, TOP_K,
     listar_modelos_ollama,
-    registrar_modelos, carregar_pipeline,
+    registrar_modelos, carregar_pipeline, preaquecer,
     responder, salvar_consulta_no_banco, formatar_metricas,
 )
 
@@ -532,6 +532,14 @@ Assistente virtual
 
 # ── Carrega índice ───────────────────────────────────────────────────
 pipeline, n_chunks, *_ = carregar_pipeline()
+
+
+@st.cache_resource(show_spinner="Preparando modelos de busca...")
+def _preaquecer_modelos():
+    return preaquecer()      # embedder (e reranker, se ativo) carregados na partida, não na 1ª pergunta
+
+
+_preaquecer_modelos()
 
 # ── Topbar da área de chat ───────────────────────────────────────────
 st.markdown("""
