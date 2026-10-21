@@ -8,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from db import init_db, get_or_create_sessao, inserir_feedback
 from nucleo import (
-    MODELO_PADRAO_SIMPLES, _MODELO_PADRAO_ID, MODELO_EMB, TOP_K,
+    chave_modelo_padrao, indice_modelo_padrao, MODELO_EMB, TOP_K,
     listar_modelos_ollama,
     registrar_modelos, carregar_pipeline,
     responder, salvar_consulta_no_banco, formatar_metricas,
@@ -393,17 +393,9 @@ with st.sidebar:
 
     if MODO_SIMPLES:
         _modelos = listar_modelos_ollama()
-        # Fallback robusto: tenta chave estática → busca por ID → primeiro disponível.
-        # Necessário porque listar_modelos_ollama() gera chaves como "🖥️ qwen3:0.6b (Ollama local)"
-        # enquanto MODELO_PADRAO_SIMPLES usa o formato de exibição legível.
-        cfg = (
-            _modelos.get(MODELO_PADRAO_SIMPLES)
-            or next((v for v in _modelos.values() if v.get("modelo") == _MODELO_PADRAO_ID), None)
-            or next(iter(_modelos.values()))
-        )
-        modelo_selecionado = next(
-            (k for k, v in _modelos.items() if v is cfg), MODELO_PADRAO_SIMPLES
-        )
+        # Modelo padrão (MODELO_PADRAO, gemma3:4b) pelo id do Ollama; se não estiver instalado, o primeiro disponível.
+        modelo_selecionado = chave_modelo_padrao(_modelos)
+        cfg = _modelos[modelo_selecionado]
         if st.button("🗑️ Limpar conversa", use_container_width=True):
             st.session_state.historico = [{
                 "role": "assistant",
@@ -418,9 +410,7 @@ with st.sidebar:
         st.markdown("## ⚙️ Configuração")
         st.markdown("---")
         _modelos = listar_modelos_ollama()
-        _idx_padrao = next(
-            (i for i, v in enumerate(_modelos.values()) if v.get("modelo") == _MODELO_PADRAO_ID), 0
-        )
+        _idx_padrao = indice_modelo_padrao(_modelos)
         modelo_selecionado = st.selectbox(
             "Modelo de IA",
             options=list(_modelos.keys()),

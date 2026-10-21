@@ -19,7 +19,9 @@ Avaliador (regra v2; a regra antiga fica congelada em _avaliar_v1 só para compa
     "07 e 08/12/2026" e "07 a 08/12/2026" são equivalentes; "30 de setembro de 2026" = "30/09/2026";
   • perguntas de contagem ("Quantos…?" com número esperado) só valem OK se a resposta AFIRMAR o número
     (dígito ou por extenso) fora de linhas cruas do contexto e sem ser outra grandeza (ex.: "4 semestres");
-  • a coluna "observação" avisa quando a resposta repete linhas cruas do contexto ("Curso:", "Data:", "Evento:").
+  • a coluna "observação" avisa quando a resposta repete linhas cruas do contexto ("Curso:", "Data:", "Evento:");
+  • polaridade: esperada "Sim…"/"Não…" e resposta começando pela oposta → FALHOU;
+  • tokens_saida >= 1000 (limite do Ollama: 1024) → nunca passa de REVISAR ("possível resposta truncada ou prolixa").
 """
 import os
 import sys
@@ -39,6 +41,7 @@ from teste_timing import carregar_pipeline
 from avaliar_retrieval import _IDS_LEGADO, _celulas
 from nucleo import (
     OLLAMA_URL,
+    _MODELO_PADRAO_ID,
     _PADRAO_COTA,
     _buscar_tabelas_por_keyword,
     _buscar_cronograma_por_keyword,
@@ -344,28 +347,53 @@ def _afirma_numero(resposta: str, n: int, pergunta_norm: str) -> bool:
 
 # ── Avaliador v2 ──────────────────────────────────────────────────────────
 
+_LIMITE_TOKENS_SAIDA = 1000      # o Ollama corta a geração em 1024 tokens (nucleo.chamar_ollama)
+_RE_POLARIDADE = re.compile(r"\W*(sim|nao)\b")
+
+
+def _polaridade(texto_norm: str) -> str | None:
+    """"sim" ou "nao" se o texto (já normalizado por _norm) COMEÇA por uma dessas palavras; senão None."""
+    m = _RE_POLARIDADE.match(texto_norm)
+    return m.group(1) if m else None
+
+
 def avaliar(resposta: str, esperada: str, nao_deve_conter: list | None = None,
-            pergunta: str = "", negativa: bool = False) -> dict:
+            pergunta: str = "", negativa: bool = False, tokens_saida: int | None = None) -> dict:
     """Avalia a resposta contra o gabarito. Retorna {resultado, repeticoes, observacao, motivo}.
 
     resultado: "OK", "REVISAR" ou "FALHOU".
     Regras:
     1. Se qualquer palavra de nao_deve_conter aparecer → FALHOU imediatamente.
-    2. Pergunta negativa (D01, D03): OK se a resposta diz que não encontrou/não consta; senão REVISAR.
-    3. Datas valem pelo valor (dia, mês, ano opcional), em qualquer formato.
-    4. Números curtos são aceitos sem a unidade (e.g. "32" sem "vagas"); dígito ↔ extenso.
-    5. Contagem ("Quantos…?"): só OK se a resposta afirmar o número esperado fora de linhas cruas do contexto.
+    2. Polaridade: se a resposta esperada começa com "Sim"/"Não" e a resposta começa com a oposta → FALHOU
+       (ex.: esperada "Não cabe recurso", resposta "Sim, cabe recurso…"). Respostas que não começam por
+       sim/não não são julgadas por esta regra.
+    3. Pergunta negativa (D01, D03): OK se a resposta diz que não encontrou/não consta; senão REVISAR.
+    4. Datas valem pelo valor (dia, mês, ano opcional), em qualquer formato.
+    5. Números curtos são aceitos sem a unidade (e.g. "32" sem "vagas"); dígito ↔ extenso.
+    6. Contagem ("Quantos…?"): só OK se a resposta afirmar o número esperado fora de linhas cruas do contexto.
+    7. tokens_saida >= 1000 (limite do Ollama: 1024): nunca passa de REVISAR e a observação avisa
+       "possível resposta truncada ou prolixa (N tokens)". FALHOU continua FALHOU.
     """
     resp = _norm(resposta)
     n_rep = _contar_repeticoes(resposta)
     obs = observacao_linhas_cruas(resposta)
 
     def saida(res: str, motivo: str = "") -> dict:
-        return {"resultado": res, "repeticoes": n_rep, "observacao": obs, "motivo": motivo}
+        o = obs
+        if tokens_saida is not None and tokens_saida >= _LIMITE_TOKENS_SAIDA:
+            aviso = f"possível resposta truncada ou prolixa ({tokens_saida} tokens)"
+            o = f"{obs}; {aviso}" if obs else aviso
+            if res == "OK":
+                res, motivo = "REVISAR", f"{motivo} | limitado a REVISAR pelo tamanho da resposta".strip(" |")
+        return {"resultado": res, "repeticoes": n_rep, "observacao": o, "motivo": motivo}
 
     for proibida in nao_deve_conter or []:
         if _norm(proibida) in resp:
             return saida("FALHOU", f"contém proibida: {proibida!r}")
+
+    pol_esp, pol_resp = _polaridade(_norm(esperada)), _polaridade(resp)
+    if pol_esp and pol_resp and pol_esp != pol_resp:
+        return saida("FALHOU", f"polaridade oposta: esperada começa com \"{pol_esp}\", resposta com \"{pol_resp}\"")
 
     if negativa:
         if re.search(r"nao (?:encontrei|consta|ha |existe|oferece|foi encontrad)", resp):
@@ -590,7 +618,21 @@ def _salvar_md(resultados: dict, modelos: list, ids: list, gabarito: dict) -> No
 
 # ── Modos offline: --reavaliar e --autoteste ──────────────────────────────
 
-# Respostas reais (gemma3:4b) com o resultado esperado da regra v2 e o que a regra v1 dava.
+# Preenchimento para reconstruir respostas prolixas (E03/E05 do qwen2.5:3b, 1024 tokens, ~3,8 e ~3,4 mil caracteres).
+_ENCHIMENTO = ("Além disso, é importante ler com atenção todas as orientações do edital antes de concluir a etapa, "
+               "conferir os dados informados e guardar o comprovante, pois o candidato é o único responsável por "
+               "cada informação prestada durante todo o processo seletivo do Instituto Federal. ")
+
+
+def _prolixa(inicio: str, n_caracteres: int) -> str:
+    return (inicio + " " + _ENCHIMENTO * (n_caracteres // len(_ENCHIMENTO) + 1))[:n_caracteres].rstrip()
+
+
+# Casos: (id, resposta, resultado esperado da regra atual, resultado da regra v1 | None, tokens_saida | None).
+# Respostas reais (gemma3:4b) com o resultado esperado da regra v2 e o que a regra v1 dava. Os três últimos casos
+# foram relatados em execuções reais, mas o texto completo não está no repositório: F17b é o trecho citado
+# (a parte depois de "complemen…" é reconstruída) e E03/E05 do qwen2.5:3b são RECONSTRUÇÕES do tamanho relatado,
+# com as palavras-chave esperadas no começo e enchimento depois.
 _AUTOTESTE = [
     ("C01", "As inscrições para o processo seletivo ocorrem no período das 14h do dia 30 de setembro de 2026 às "
             "23h59min do dia 19 de outubro de 2026, exclusivamente via INTERNET no endereço ingresso.ifrs.edu.br.",
@@ -606,6 +648,13 @@ _AUTOTESTE = [
             "Curso: Técnico em Informática | Turnos: Manhã e Tarde | Duração (semestres): 3* | Total de Vagas: 32\n"
             "Curso: Técnico em Mecânica | Turnos: Manhã e Tarde | Duração (semestres): 3* | Total de Vagas: 32",
      "REVISAR", "OK"),
+    ("F17b", "Sim, cabe recurso da análise da documentação na Chamada Pública. Especificamente, o candidato tem o "
+             "prazo para complementar a documentação.", "FALHOU", "OK", 60),
+    ("E03", _prolixa("Para se inscrever é preciso acessar a internet, no endereço ingresso.ifrs.edu.br, autenticar-se "
+                     "com login e senha do gov.br e informar o seu CPF.", 3800), "REVISAR", "OK", 1024),
+    ("E05", _prolixa("Na matrícula é preciso apresentar carteira de identidade ou documento equivalente, documento "
+                     "com o número do CPF e o comprovante de conclusão do ensino fundamental ou médio.", 3400),
+     "REVISAR", "OK", 1024),
 ]
 
 # Casos extras de cobertura das regras novas (não vêm de execuções reais; o esperado da v2 foi escrito à mão e a v1
@@ -624,18 +673,31 @@ _AUTOTESTE_EXTRA = [
     ("B12", "Há 4 cursos superiores.", "OK", None),
     ("A04", "O curso tem 32 vagas.", "OK", None),
     ("D01", "Não encontrei essa informação nos documentos.", "OK", None),
-    ("D01", "Sim, o campus oferece Direito.", "REVISAR", None),
+    ("D01", "Sim, o campus oferece Direito.", "FALHOU", None),        # polaridade oposta a "Não encontrei…"
+    # polaridade (esperada "Não cabe recurso" / "Sim, Licenciatura em Matemática")
+    ("F17b", "Não caberá recurso da análise da documentação na Chamada Pública.", "OK", None),
+    ("F17b", "Não cabe recurso.", "OK", None),
+    ("F17b", "O recurso não é cabível nessa etapa.", "REVISAR", None),   # sem sim/não inicial: só palavras-chave (1/2)
+    ("B03", "Sim, há uma Licenciatura em Matemática.", "OK", None),
+    ("B03", "Não, não há licenciatura no campus. Licenciatura em Matemática não consta.", "FALHOU", None),
+    ("A06", "Não, o campus não oferece Técnico em Eletrotécnica, turno Noite, 30 vagas, 4 semestres.", "FALHOU", None),
+    # tamanho da resposta
+    ("E01", "4", "REVISAR", None, 1024),
+    ("E01", "4", "REVISAR", None, 1000),
+    ("E01", "4", "OK", None, 999),
+    ("E01", "Muitos cursos, uns trinta, não sei dizer.", "FALHOU", None, 1024),   # FALHOU continua FALHOU
 ]
 
 
 def _grade(casos: list, gabarito: dict) -> list:
-    """Avalia casos (qid, resposta, esperado_v2, esperado_v1) e devolve dicts com v1, v2 e se bateu."""
+    """Avalia casos (qid, resposta, esperado_v2, esperado_v1[, tokens_saida]) e devolve dicts com v1, v2 e se bateu."""
     linhas = []
-    for qid, resposta, esp_v2, esp_v1 in casos:
+    for qid, resposta, esp_v2, esp_v1, *resto in casos:
+        tokens = resto[0] if resto else None
         g = gabarito[qid]
         v1, _ = _avaliar_v1(resposta, g["resposta_esperada"], g["nao_deve_conter"])
-        v2 = avaliar(resposta, g["resposta_esperada"], g["nao_deve_conter"], g["pergunta"], g["negativa"])
-        linhas.append({"id": qid, "esperada": g["resposta_esperada"], "resposta": resposta, "v1": v1,
+        v2 = avaliar(resposta, g["resposta_esperada"], g["nao_deve_conter"], g["pergunta"], g["negativa"], tokens)
+        linhas.append({"id": qid, "tokens": tokens, "esperada": g["resposta_esperada"], "resposta": resposta, "v1": v1,
                        "v2": v2["resultado"], "obs": v2["observacao"], "motivo": v2["motivo"],
                        "esp_v2": esp_v2, "esp_v1": esp_v1,
                        "ok": v2["resultado"] == esp_v2 and (esp_v1 is None or v1 == esp_v1)})
@@ -647,8 +709,8 @@ def _imprimir_autoteste(titulo: str, linhas: list) -> None:
     for l in linhas:
         resp = " ".join(l["resposta"].split())
         print(f"[{'PASSOU' if l['ok'] else 'DIVERGE'}] {l['id']}  esperado v2={l['esp_v2']}  "
-              f"antiga(v1)={l['v1']}  nova(v2)={l['v2']}")
-        print(f"    resposta : {resp[:110]}{'…' if len(resp) > 110 else ''}")
+              f"antiga(v1)={l['v1']}  nova(v2)={l['v2']}" + (f"  tokens_saida={l['tokens']}" if l["tokens"] else ""))
+        print(f"    resposta : {resp[:110]}{'…' if len(resp) > 110 else ''} ({len(l['resposta'])} caracteres)")
         print(f"    gabarito : {l['esperada'][:80]}")
         print(f"    motivo   : {l['motivo']}" + (f"  | observação: {l['obs']}" if l["obs"] else ""))
 
@@ -659,7 +721,7 @@ def autoteste(gabarito: dict) -> int:
         print(f"ERRO: ids do autoteste fora do gabarito: {ausentes}")
         return 1
     reais, extras = _grade(_AUTOTESTE, gabarito), _grade(_AUTOTESTE_EXTRA, gabarito)
-    _imprimir_autoteste("Respostas reais do gemma3:4b (pedido)", reais)
+    _imprimir_autoteste("Respostas relatadas de execuções reais (gemma3:4b e qwen2.5:3b; ver nota no código)", reais)
     _imprimir_autoteste("Casos extras de cobertura das regras (escritos à mão)", extras)
     todos = reais + extras
     print("\n── Casos em que a regra nova mudou o resultado em relação à antiga ──")
@@ -689,7 +751,9 @@ def reavaliar(caminho: Path, gabarito: dict) -> int:
         if g is None or not g["resposta_esperada"]:
             ignoradas.append(qid)
             continue
-        v2 = avaliar(l["resposta"], g["resposta_esperada"], g["nao_deve_conter"], g["pergunta"], g["negativa"])
+        bruto = (l.get("tokens_saida") or "").strip()
+        tokens = int(float(bruto)) if bruto else None
+        v2 = avaliar(l["resposta"], g["resposta_esperada"], g["nao_deve_conter"], g["pergunta"], g["negativa"], tokens)
         saida.append({"id": qid, "grupo": g["grupo"], "pergunta": g["pergunta"], "modelo": l["modelo"],
                       "resposta": l["resposta"], "antigo": l["resultado"], "novo": v2["resultado"],
                       "observacao": v2["observacao"], "motivo": v2["motivo"]})
@@ -765,7 +829,7 @@ def main() -> None:
     if args.modelos:
         solicitados = [m.strip() for m in args.modelos.split(",")]
     else:
-        solicitados = ["qwen3:0.6b"]
+        solicitados = [_MODELO_PADRAO_ID]
 
     maritaca_ids = {m for m in solicitados if "sabia" in m.lower() or "maritaca" in m.lower()}
     ollama_ids   = [m for m in solicitados if m not in maritaca_ids]
@@ -832,7 +896,8 @@ def main() -> None:
             pergunta, esperada = g["pergunta"], g["resposta_esperada"]
             print(f"\n  [{qid}] {pergunta}")
             cell = _executar(pipeline, tabela_docs, cronograma_docs, pergunta, modelo_cfg)
-            av = avaliar(cell["resposta"], esperada, g["nao_deve_conter"], pergunta, g["negativa"])
+            av = avaliar(cell["resposta"], esperada, g["nao_deve_conter"], pergunta, g["negativa"],
+                         cell["tokens_saida"])
             print(f"  Resposta : {cell['resposta'][:120]}"
                   f"{'...' if len(cell['resposta']) > 120 else ''}")
             print(f"  Esperado : {esperada[:80]}")

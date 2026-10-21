@@ -336,14 +336,52 @@ MODELOS = {
         "tipo": "ollama", "modelo": "qwen3:0.6b",
         "descricao": "Local no servidor", "params_b": 0.6, "quantizacao": "Q4_0",
     },
+    "🖥️ Gemma 3 4B (Ollama local)": {
+        "tipo": "ollama", "modelo": "gemma3:4b",
+        "descricao": "Local no servidor", "params_b": 4.3, "quantizacao": "Q4_K_M",
+    },
     "🌐 Sabiá-4 (Maritaca)": {
         "tipo": "maritaca", "modelo": "sabia-4",
         "descricao": "API Maritaca (nuvem)", "params_b": 0.0, "quantizacao": "—",
     },
 }
 
-MODELO_PADRAO_SIMPLES = "🖥️ Qwen3 0.6B (Ollama local)"
-_MODELO_PADRAO_ID     = "qwen3:0.6b"
+# Modelo padrão do app: gemma3:4b, sobrescrevível pela variável de ambiente MODELO_PADRAO (id do Ollama, ex.:
+# MODELO_PADRAO=qwen3:0.6b). Se ele não estiver instalado no Ollama, o app usa o primeiro modelo da lista
+# (ver indice_modelo_padrao / chave_modelo_padrao).
+_MODELO_PADRAO_ID = os.getenv("MODELO_PADRAO", "").strip() or "gemma3:4b"
+
+
+def _mesmo_modelo(a: str, b: str) -> bool:
+    """Mesmo modelo do Ollama; "gemma3" equivale a "gemma3:latest"."""
+    if a == b:
+        return True
+    return (":" not in b and a == f"{b}:latest") or (":" not in a and b == f"{a}:latest")
+
+
+def _chave_por_id(modelos: dict, modelo_id: str) -> str:
+    return next((k for k, v in modelos.items() if _mesmo_modelo(v.get("modelo", ""), modelo_id)), "")
+
+
+if not _chave_por_id(MODELOS, _MODELO_PADRAO_ID):      # id da variável que não está na lista fixa
+    MODELOS[f"🖥️ {_MODELO_PADRAO_ID} (Ollama local)"] = {
+        "tipo": "ollama", "modelo": _MODELO_PADRAO_ID,
+        "descricao": "Local no servidor", "params_b": 0.0, "quantizacao": "?",
+    }
+
+MODELO_PADRAO_SIMPLES = _chave_por_id(MODELOS, _MODELO_PADRAO_ID)    # chave em MODELOS (scripts de linha de comando)
+
+
+def indice_modelo_padrao(modelos: dict, padrao_id: str = None) -> int:
+    """Índice do modelo padrão em `modelos` (para st.selectbox(index=...)). Se o padrão não estiver na lista
+    (não instalado no Ollama), 0 = primeiro modelo disponível."""
+    chave = _chave_por_id(modelos, padrao_id or _MODELO_PADRAO_ID)
+    return list(modelos).index(chave) if chave else 0
+
+
+def chave_modelo_padrao(modelos: dict, padrao_id: str = None) -> str:
+    """Chave do modelo padrão em `modelos`; se não estiver na lista, a do primeiro modelo disponível."""
+    return list(modelos)[indice_modelo_padrao(modelos, padrao_id)]
 
 
 @st.cache_data(ttl=60)
