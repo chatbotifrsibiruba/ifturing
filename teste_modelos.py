@@ -1,8 +1,9 @@
 """
 teste_modelos.py — Compara modelos usando o mesmo fluxo de produção RAG.
 
-Reutiliza carregar_pipeline() de teste_timing.py e os blocos de retrieval
-de nucleo.py. Não altera nenhum dos dois.
+Reutiliza carregar_pipeline() de teste_timing.py e o retrieval de nucleo.py: chama nucleo.recuperar_contexto(),
+a MESMA função de responder() (inclui o reranker opcional, RERANKER_ATIVO=1). Com o reranker ligado e nunca
+aplicado, o script termina com erro em vez de gravar um resultado que pareceria de reranker.
 
 Uso:
     python teste_modelos.py
@@ -42,9 +43,9 @@ from avaliar_retrieval import _IDS_LEGADO, _celulas
 from nucleo import (
     OLLAMA_URL,
     _MODELO_PADRAO_ID,
-    _PADRAO_COTA,
-    _buscar_tabelas_por_keyword,
-    _buscar_cronograma_por_keyword,
+    recuperar_contexto,
+    preaquecer,
+    RERANKER_ATIVO, RERANKER_MODELO, RERANKER_DEVICE, RERANKER_CANDIDATOS,
     perguntar_llm,
     _OllamaOffline,
 )
@@ -437,36 +438,21 @@ def _ollama_disponiveis() -> set:
 
 def _executar(pipeline, tabela_docs: list, cronograma_docs: list,
               pergunta: str, modelo_cfg: dict) -> dict:
-    """Reproduz nucleo.responder() sem @st.cache_resource."""
+    """Mesmo retrieval de nucleo.responder() (nucleo.recuperar_contexto, com o reranker opcional) + LLM, sem
+    @st.cache_resource. `contexto` vai no retorno só para conferência (--ids/provas)."""
     t0 = time.perf_counter()
 
-    resultado = pipeline.run({"embedder": {"text": pergunta}})
-    docs = resultado["retriever"]["documents"]
-
-    docs = [
-        d for d in docs
-        if (d.meta or {}).get("tipo") == "tabela"
-        or not _PADRAO_COTA.search(d.content or "")
-    ]
-
-    docs_tabela_extra = _buscar_tabelas_por_keyword(pergunta, tabela_docs, docs)
-    if docs_tabela_extra:
-        docs_tabela_ja   = [d for d in docs if (d.meta or {}).get("tipo") == "tabela"]
-        docs_texto_final = [d for d in docs if (d.meta or {}).get("tipo") != "tabela"][:6]
-        docs = docs_tabela_ja + docs_tabela_extra + docs_texto_final
-
-    docs_crono_extra = _buscar_cronograma_por_keyword(pergunta, cronograma_docs, docs)
-    if docs_crono_extra:
-        docs = docs_crono_extra + docs
+    rc = recuperar_contexto(pergunta, pipeline, tabela_docs, cronograma_docs)
+    docs, contexto = rc["docs"], rc["contexto"]
+    extra = {"tempo_rerank_s": round(rc["t_rerank"], 3), "rerank_aplicado": rc["rerank_aplicado"],
+             "contexto": contexto}
 
     if not docs:
         return {
             "resposta": "⚠️ Nenhum trecho relevante encontrado.",
             "tempo_total_s": round(time.perf_counter() - t0, 3),
-            "tokens_saida": 0,
+            "tokens_saida": 0, **extra,
         }
-
-    contexto = "\n\n---\n\n".join(d.content for d in docs)
 
     try:
         r = perguntar_llm(pergunta, contexto, modelo_cfg)
@@ -474,14 +460,32 @@ def _executar(pipeline, tabela_docs: list, cronograma_docs: list,
         return {
             "resposta": "ERRO: Ollama offline",
             "tempo_total_s": round(time.perf_counter() - t0, 3),
-            "tokens_saida": 0,
+            "tokens_saida": 0, **extra,
         }
 
     return {
         "resposta": r["texto"],
         "tempo_total_s": round(time.perf_counter() - t0, 3),
-        "tokens_saida": r["tokens_saida"],
+        "tokens_saida": r["tokens_saida"], **extra,
     }
+
+
+def _linha_reranker(aplicados: int = None, total: int = None) -> str:
+    """Cabeçalho do reranker para o log e o relatório. Sem contagens (início do log) não diz 'aplicado em'."""
+    if not RERANKER_ATIVO:
+        return "RERANKER_ATIVO=0 (desligado)"
+    base = (f"RERANKER_ATIVO=1 modelo={RERANKER_MODELO} device={RERANKER_DEVICE} "
+            f"candidatos={RERANKER_CANDIDATOS}")
+    if aplicados is not None:
+        base += f" aplicado em {aplicados}/{total} perguntas"
+    return base
+
+
+def _contagem_reranker(resultados: dict, modelos: list, ids: list) -> tuple:
+    """(aplicados, total, [(modelo, id) sem reranker]) sobre as perguntas cronometradas."""
+    celulas = [(m, q, resultados[m][q]) for m in modelos for q in ids if q in resultados.get(m, {})]
+    sem = [(m, q) for m, q, c in celulas if not c.get("rerank_aplicado")]
+    return len(celulas) - len(sem), len(celulas), sem
 
 
 # ── Seleção das perguntas ─────────────────────────────────────────────────
@@ -573,7 +577,8 @@ def _salvar_csv(resultados: dict, modelos: list, ids: list, gabarito: dict) -> N
     with _SAIDA_CSV.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["id", "grupo", "pergunta", "modelo", "resposta", "resultado",
-                    "tempo_total_s", "tokens_saida", "repeticoes", "observacao"])
+                    "tempo_total_s", "tokens_saida", "repeticoes", "observacao",
+                    "tempo_rerank_s", "rerank_aplicado"])
         for qid in ids:
             for m in modelos:
                 cell = resultados.get(m, {}).get(qid)
@@ -584,6 +589,7 @@ def _salvar_csv(resultados: dict, modelos: list, ids: list, gabarito: dict) -> N
                     cell["resposta"], cell["resultado"],
                     cell["tempo"], cell["tokens"],
                     cell.get("repeticoes", 0), cell.get("observacao", ""),
+                    cell.get("tempo_rerank_s", 0.0), int(bool(cell.get("rerank_aplicado")))
                 ])
     print(f"[saída] CSV salvo em {_SAIDA_CSV}")
 
@@ -593,7 +599,11 @@ def _md_escape(t: str) -> str:
 
 
 def _salvar_md(resultados: dict, modelos: list, ids: list, gabarito: dict) -> None:
-    linhas = ["# Resultado: Comparação de Modelos", ""]
+    aplicados, total, sem = _contagem_reranker(resultados, modelos, ids)
+    linhas = ["# Resultado: Comparação de Modelos", "", f"`{_linha_reranker(aplicados, total)}`", ""]
+    if RERANKER_ATIVO and sem:
+        linhas += [f"> **ATENÇÃO:** o reranker NÃO foi aplicado em {len(sem)} de {total} execuções "
+                   f"({', '.join(f'{q}·{m}' for m, q in sem)}): nessas perguntas valeu a ordem semântica.", ""]
     linhas.append("| ID | Grupo | Pergunta | " + " | ".join(modelos) + " |")
     linhas.append("|---|---|---| " + " | ".join(["---"] * len(modelos)) + " |")
     for qid in ids:
@@ -611,6 +621,15 @@ def _salvar_md(resultados: dict, modelos: list, ids: list, gabarito: dict) -> No
            if resultados.get(m, {}).get(qid, {}).get("observacao")]
     linhas += ["", "## Observações", ""]
     linhas += [f"- {qid} · {m}: {o}" for qid, m, o in obs] or ["(nenhuma)"]
+    linhas += ["", "## Reranker", "", f"`{_linha_reranker(aplicados, total)}`", ""]
+    if RERANKER_ATIVO:
+        linhas += ["| ID | modelo | tempo_rerank_s | rerank_aplicado |", "|---|---|---|---|"]
+        for qid in ids:
+            for m in modelos:
+                cell = resultados.get(m, {}).get(qid)
+                if cell:
+                    linhas.append(f"| {qid} | {m} | {cell.get('tempo_rerank_s', 0.0):.3f} | "
+                                  f"{'sim' if cell.get('rerank_aplicado') else '**NÃO**'} |")
     linhas.append("")
     _SAIDA_MD.write_text("\n".join(linhas), encoding="utf-8")
     print(f"[saída] Markdown salvo em {_SAIDA_MD}")
@@ -865,10 +884,18 @@ def main() -> None:
     for qid in ids:
         print(f"  {qid} [{gabarito[qid]['grupo']}]: {gabarito[qid]['pergunta'][:70]}")
     print("=" * 60)
+    print(_linha_reranker() + ("  (a contagem 'aplicado em N/total' sai no fim)" if RERANKER_ATIVO else ""))
     print()
 
-    # Pipeline (sem @st.cache_resource)
+    # Pipeline (sem @st.cache_resource) + embedder/reranker carregados ANTES da 1ª pergunta
     pipeline, tabela_docs, cronograma_docs = carregar_pipeline()
+    aquecimento = preaquecer(pipeline)
+    print(f"[preaquecer] {aquecimento}")
+    if RERANKER_ATIVO and aquecimento["reranker"] != "ok":
+        print(f"\nERRO: RERANKER_ATIVO=1 mas o reranker {RERANKER_MODELO!r} não ficou disponível em "
+              f"{RERANKER_DEVICE!r} ({aquecimento['reranker']}; veja o aviso [reranker] acima). Abortando antes de "
+              f"chamar qualquer modelo: um resultado sem reranker pareceria um resultado com reranker.")
+        sys.exit(2)
 
     # Execução
     resultados: dict = {m: {} for m in modelos_ok}
@@ -904,6 +931,9 @@ def main() -> None:
             rep_info = f", rep={av['repeticoes']}" if av["repeticoes"] else ""
             print(f"  → {av['resultado']}  ({cell['tempo_total_s']:.1f}s, "
                   f"{cell['tokens_saida']} tokens{rep_info})")
+            if RERANKER_ATIVO:
+                print(f"  reranker : {cell['tempo_rerank_s']:.2f}s "
+                      f"({'aplicado' if cell['rerank_aplicado'] else 'NÃO aplicado'})")
             if av["observacao"]:
                 print(f"  ⚠ {av['observacao']}")
             resultados[modelo_id][qid] = {
@@ -913,7 +943,19 @@ def main() -> None:
                 "tokens": cell["tokens_saida"],
                 "repeticoes": av["repeticoes"],
                 "observacao": av["observacao"],
+                "tempo_rerank_s": cell["tempo_rerank_s"],
+                "rerank_aplicado": cell["rerank_aplicado"],
             }
+
+    aplicados, total, sem = _contagem_reranker(resultados, modelos_ok, ids)
+    print(f"\n{_linha_reranker(aplicados, total)}")
+    if RERANKER_ATIVO and aplicados == 0:
+        print(f"ERRO: RERANKER_ATIVO=1, mas o reranker não foi aplicado em NENHUMA das {total} execuções. "
+              f"Resultados NÃO gravados (seriam resultados sem reranker com cara de reranker).")
+        sys.exit(2)
+    if RERANKER_ATIVO and sem:
+        print(f"AVISO: reranker NÃO aplicado em {len(sem)} de {total} execuções: "
+              f"{', '.join(f'{q}·{m}' for m, q in sem)} (ordem semântica nessas; registrado no relatório).")
 
     _imprimir_tabela(resultados, modelos_ok, ids, gabarito)
     _salvar_csv(resultados, modelos_ok, ids, gabarito)

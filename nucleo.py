@@ -536,27 +536,31 @@ def reordenar_por_reranker(pergunta: str, docs: list, top_k: int = TOP_K) -> tup
         return docs[:top_k], time.perf_counter() - t0, False
 
 
-def preaquecer() -> dict:
+def preaquecer(pipeline=None) -> dict:
     """Carrega embedder e (se ativo) reranker de uma vez, para a 1ª pergunta não pagar a carga (~5 s o embedder).
+    `pipeline`: o pipeline que vai responder (scripts que montam o próprio); None → o de carregar_pipeline().
     Idempotente. Devolve os segundos gastos em cada parte."""
     t0 = time.perf_counter()
-    pipeline = carregar_pipeline()[0]
+    if pipeline is None:
+        pipeline = carregar_pipeline()[0]
     if pipeline is not None:
         pipeline.get_component("embedder").run(text="aquecimento")     # warm_up + 1ª inferência
     t_emb = time.perf_counter() - t0
     t1 = time.perf_counter()
     rr = _reranker()
+    aquecido = rr is not None
     if rr is not None:
         try:
             with _reranker_lock_uso:
                 rr.predict([("aquecimento", "texto de aquecimento")], batch_size=1, show_progress_bar=False)
         except Exception as exc:          # ex.: CUDA sem memória: o app sobe e cada pergunta cai na ordem semântica
+            aquecido = False
             print(f"[reranker] AVISO: falhou no aquecimento ({type(exc).__name__}: {str(exc)[:200]})")
     t_rr = time.perf_counter() - t1
+    estado = "desligado" if not RERANKER_ATIVO else ("ok" if aquecido else "indisponivel")
     print(f"[preaquecer] embedder {t_emb:.1f}s | reranker "
-          f"{'desligado' if not RERANKER_ATIVO else (f'{t_rr:.1f}s' if rr else 'indisponível')}")
-    return {"embedder_s": round(t_emb, 2), "reranker_s": round(t_rr, 2),
-            "reranker": "desligado" if not RERANKER_ATIVO else ("ok" if rr else "indisponivel")}
+          f"{estado if estado != 'ok' else f'{t_rr:.1f}s'}")
+    return {"embedder_s": round(t_emb, 2), "reranker_s": round(t_rr, 2), "reranker": estado}
 
 
 # ── Ollama: escolha da instância ───────────────────────────────────────────
@@ -767,6 +771,93 @@ def perguntar_llm(pergunta: str, contexto: str, modelo_cfg: dict) -> dict:
     return chamar_ollama(prompt, modelo_cfg["modelo"])
 
 
+def recuperar_contexto(pergunta: str, pipeline, tabela_docs: list, cronograma_docs: list) -> dict:
+    """Retrieval completo de UMA pergunta, até o texto do contexto. É o ÚNICO caminho de retrieval: responder(),
+    teste_modelos.py e teste_timing.py chamam esta função (não copie este fluxo).
+
+    Busca semântica (RERANKER_CANDIDATOS chunks se RERANKER_ATIVO=1, senão TOP_K) → reranker (opcional) → TOP_K →
+    pós-filtro de cotas → injeção híbrida de tabelas → injeção híbrida de cronograma → contexto.
+    Devolve: docs, contexto, t_retrieval (embed+busca), t_rerank, rerank_aplicado, t_contexto, scores,
+    ids_tabela_extra e ids_crono_extra (chunks injetados, para depuração)."""
+    # 1. Embedding da query + busca vetorial no ChromaDocumentStore
+    t0 = time.perf_counter()
+    entrada = {"embedder": {"text": pergunta}}
+    if RERANKER_ATIVO:
+        entrada["retriever"] = {"top_k": RERANKER_CANDIDATOS}      # candidatos para o reranker
+    resultado = pipeline.run(entrada, include_outputs_from={"embedder"})
+    docs = resultado["retriever"]["documents"]
+    embedding_pergunta = resultado["embedder"]["embedding"]
+    t_retrieval = time.perf_counter() - t0
+    print(f"[timing] embed+retrieve:      {t_retrieval:.3f}s  ({len(docs)} docs recuperados)")
+
+    # Reranker (opcional): reordena os candidatos e fica com TOP_K; antes da injeção híbrida
+    t_rerank, rerank_aplicado = 0.0, False
+    if RERANKER_ATIVO:
+        docs, t_rerank, rerank_aplicado = reordenar_por_reranker(pergunta, docs)
+        print(f"[timing] reranker:            {t_rerank:.3f}s  "
+              f"({'aplicado' if rerank_aplicado else 'NÃO aplicado — ordem semântica'}, {len(docs)} docs)")
+
+    # Pós-filtro: descarta chunks de texto que descrevem distribuição de cotas
+    docs_antes = len(docs)
+    docs = [
+        d for d in docs
+        if (d.meta or {}).get("tipo") == "tabela" or not _PADRAO_COTA.search(d.content or "")
+    ]
+    n_removidos = docs_antes - len(docs)
+    if n_removidos:
+        print(f"[timing] pos_filtro_cota:     {n_removidos} chunk(s) removido(s)")
+
+    # Retrieval híbrido: injeta chunks de tabela relevantes por palavra-chave
+    t0_hib = time.perf_counter()
+    docs_tabela_extra = _buscar_tabelas_por_keyword(pergunta, tabela_docs, docs)
+    if docs_tabela_extra:
+        # Tabelas primeiro → LLM vê dados estruturados antes do texto livre
+        docs_tabela_ja  = [d for d in docs if (d.meta or {}).get("tipo") == "tabela"]
+        docs_texto_final = [d for d in docs if (d.meta or {}).get("tipo") != "tabela"]
+        # Quando há injeção de tabelas, reduz chunks de texto para 6 para preservar
+        # espaço de geração sem sacrificar o contexto estruturado mais confiável
+        docs_texto_final = docs_texto_final[:6]
+        docs = docs_tabela_ja + docs_tabela_extra + docs_texto_final
+        n_tab = len(docs_tabela_ja) + len(docs_tabela_extra)
+        print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
+              f"({len(docs_tabela_extra)} tabelas injetadas → "
+              f"{n_tab} tab + {len(docs_texto_final)} texto = {len(docs)} docs)")
+    else:
+        print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
+              f"(0 injetados)")
+
+    # Retrieval híbrido: injeta chunks de cronograma quando a pergunta menciona datas/prazos
+    t0_crono = time.perf_counter()
+    docs_crono_extra = _buscar_cronograma_por_keyword(
+        pergunta, cronograma_docs, docs,
+        ranquear=lambda k: cronograma_mais_similares(pipeline, embedding_pergunta, k),
+    )
+    if docs_crono_extra:
+        # Cronograma no início → LLM lê as datas antes do restante do contexto
+        docs = docs_crono_extra + docs
+        print(f"[timing] hibrido_cronograma:  {time.perf_counter() - t0_crono:.6f}s  "
+              f"({len(docs_crono_extra)} cronograma injetados, {len(docs)} docs total)")
+    else:
+        print(f"[timing] hibrido_cronograma:  {time.perf_counter() - t0_crono:.6f}s  (0 injetados)")
+
+    # Montagem do contexto (join dos documentos recuperados)
+    t0 = time.perf_counter()
+    scores = [d.score for d in docs if d.score is not None]
+    contexto = "\n\n---\n\n".join([d.content for d in docs])
+    t_contexto = time.perf_counter() - t0
+    if docs:
+        n_tab_ctx = sum(1 for d in docs if (d.meta or {}).get("tipo") == "tabela")
+        print(f"[timing] montagem_contexto:   {t_contexto:.6f}s  "
+              f"({len(contexto)} chars | {n_tab_ctx} tabela + {len(docs)-n_tab_ctx} texto)")
+    return {
+        "docs": docs, "contexto": contexto, "scores": scores,
+        "t_retrieval": t_retrieval, "t_rerank": t_rerank, "rerank_aplicado": rerank_aplicado,
+        "t_contexto": t_contexto,
+        "ids_tabela_extra": {d.id for d in docs_tabela_extra if d.id},
+        "ids_crono_extra": {d.id for d in docs_crono_extra if d.id},
+    }
+
+
 def responder(pergunta: str, modelo_cfg: dict, propagar_erros: bool = False) -> dict:
     try:
         pipeline, _, tabela_docs, cronograma_docs = carregar_pipeline()
@@ -779,66 +870,10 @@ def responder(pergunta: str, modelo_cfg: dict, propagar_erros: bool = False) -> 
 
         print(f"\n[timing] ═══ início | modelo={modelo_cfg['modelo']} | pergunta={len(pergunta)} chars ═══")
 
-        # 1. Embedding da query + busca vetorial no ChromaDocumentStore
-        t0 = time.perf_counter()
-        entrada = {"embedder": {"text": pergunta}}
-        if RERANKER_ATIVO:
-            entrada["retriever"] = {"top_k": RERANKER_CANDIDATOS}      # candidatos para o reranker
-        resultado = pipeline.run(entrada, include_outputs_from={"embedder"})
-        docs = resultado["retriever"]["documents"]
-        embedding_pergunta = resultado["embedder"]["embedding"]
-        t_retrieval = time.perf_counter() - t0
-        print(f"[timing] embed+retrieve:      {t_retrieval:.3f}s  ({len(docs)} docs recuperados)")
-
-        # Reranker (opcional): reordena os candidatos e fica com TOP_K; antes da injeção híbrida
-        t_rerank, rerank_aplicado = 0.0, False
-        if RERANKER_ATIVO:
-            docs, t_rerank, rerank_aplicado = reordenar_por_reranker(pergunta, docs)
-            print(f"[timing] reranker:            {t_rerank:.3f}s  "
-                  f"({'aplicado' if rerank_aplicado else 'NÃO aplicado — ordem semântica'}, {len(docs)} docs)")
-
-        # Pós-filtro: descarta chunks de texto que descrevem distribuição de cotas
-        docs_antes = len(docs)
-        docs = [
-            d for d in docs
-            if (d.meta or {}).get("tipo") == "tabela" or not _PADRAO_COTA.search(d.content or "")
-        ]
-        n_removidos = docs_antes - len(docs)
-        if n_removidos:
-            print(f"[timing] pos_filtro_cota:     {n_removidos} chunk(s) removido(s)")
-
-        # Retrieval híbrido: injeta chunks de tabela relevantes por palavra-chave
-        t0_hib = time.perf_counter()
-        docs_tabela_extra = _buscar_tabelas_por_keyword(pergunta, tabela_docs, docs)
-        if docs_tabela_extra:
-            # Tabelas primeiro → LLM vê dados estruturados antes do texto livre
-            docs_tabela_ja  = [d for d in docs if (d.meta or {}).get("tipo") == "tabela"]
-            docs_texto_final = [d for d in docs if (d.meta or {}).get("tipo") != "tabela"]
-            # Quando há injeção de tabelas, reduz chunks de texto para 6 para preservar
-            # espaço de geração sem sacrificar o contexto estruturado mais confiável
-            docs_texto_final = docs_texto_final[:6]
-            docs = docs_tabela_ja + docs_tabela_extra + docs_texto_final
-            n_tab = len(docs_tabela_ja) + len(docs_tabela_extra)
-            print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
-                  f"({len(docs_tabela_extra)} tabelas injetadas → "
-                  f"{n_tab} tab + {len(docs_texto_final)} texto = {len(docs)} docs)")
-        else:
-            print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
-                  f"(0 injetados)")
-
-        # Retrieval híbrido: injeta chunks de cronograma quando a pergunta menciona datas/prazos
-        t0_crono = time.perf_counter()
-        docs_crono_extra = _buscar_cronograma_por_keyword(
-            pergunta, cronograma_docs, docs,
-            ranquear=lambda k: cronograma_mais_similares(pipeline, embedding_pergunta, k),
-        )
-        if docs_crono_extra:
-            # Cronograma no início → LLM lê as datas antes do restante do contexto
-            docs = docs_crono_extra + docs
-            print(f"[timing] hibrido_cronograma:  {time.perf_counter() - t0_crono:.6f}s  "
-                  f"({len(docs_crono_extra)} cronograma injetados, {len(docs)} docs total)")
-        else:
-            print(f"[timing] hibrido_cronograma:  {time.perf_counter() - t0_crono:.6f}s  (0 injetados)")
+        # 1. Retrieval completo (busca, reranker opcional, pós-filtro, híbrido, contexto): recuperar_contexto()
+        rc = recuperar_contexto(pergunta, pipeline, tabela_docs, cronograma_docs)
+        docs, contexto, scores = rc["docs"], rc["contexto"], rc["scores"]
+        t_retrieval, t_rerank, rerank_aplicado = rc["t_retrieval"], rc["t_rerank"], rc["rerank_aplicado"]
 
         if not docs:
             t_total = time.perf_counter() - t_inicio
@@ -855,15 +890,6 @@ def responder(pergunta: str, modelo_cfg: dict, propagar_erros: bool = False) -> 
                 "tempo_carga_s": 0.0, "tempo_prefill_s": 0.0, "tempo_geracao_s": 0.0,
             }
 
-        # 2. Montagem do contexto (join dos documentos recuperados)
-        t0 = time.perf_counter()
-        scores = [d.score for d in docs if d.score is not None]
-        contexto = "\n\n---\n\n".join([d.content for d in docs])
-        t_contexto = time.perf_counter() - t0
-        n_tab_ctx = sum(1 for d in docs if (d.meta or {}).get("tipo") == "tabela")
-        print(f"[timing] montagem_contexto:   {t_contexto:.6f}s  "
-              f"({len(contexto)} chars | {n_tab_ctx} tabela + {len(docs)-n_tab_ctx} texto)")
-
         if _DEBUG_CONTEXTO:
             print("\n" + "─" * 72)
             print(f"[DEBUG_CONTEXTO] {len(docs)} docs no contexto:")
@@ -874,7 +900,7 @@ def responder(pergunta: str, modelo_cfg: dict, propagar_erros: bool = False) -> 
                 print(f"        {(d.content or '')!r}")
             print("─" * 72 + "\n")
 
-        # 3. LLM: montagem do prompt + chamada ao Ollama (detalhado dentro de perguntar_llm/chamar_ollama)
+        # 2. LLM: montagem do prompt + chamada ao Ollama (detalhado dentro de perguntar_llm/chamar_ollama)
         t1 = time.perf_counter()
         try:
             r = perguntar_llm(pergunta, contexto, modelo_cfg)

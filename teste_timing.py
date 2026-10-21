@@ -1,14 +1,16 @@
 """
 teste_timing.py — Script de profiling do pipeline RAG sem Streamlit.
 
-Espelha nucleo.carregar_pipeline() (sem @st.cache_resource) e executa os
-mesmos passos de retrieval que nucleo.responder(), na mesma ordem:
-  [1] embed + retrieve semântico
+Espelha nucleo.carregar_pipeline() (sem @st.cache_resource) e chama a MESMA função de retrieval de
+nucleo.responder() (nucleo.recuperar_contexto — não há mais cópia do fluxo aqui):
+  [1] embed + retrieve semântico (RERANKER_CANDIDATOS chunks se RERANKER_ATIVO=1)
+  [1b] reranker opcional (linha "[timing] reranker: Xs (aplicado / NÃO aplicado)")
   [2] pós-filtro de cotas
   [3] hybrid tabelas   (_buscar_tabelas_por_keyword)
   [4] hybrid cronograma (_buscar_cronograma_por_keyword)
   [5] montagem de contexto
   [6] LLM
+preaquecer() roda antes da 1ª pergunta (embedder e reranker já carregados nas medições).
 
 Uso:
     python teste_timing.py
@@ -39,9 +41,9 @@ from nucleo import (
     MODELOS, MODELO_PADRAO_SIMPLES,
     perguntar_llm,
     _OllamaOffline, _MSG_OLLAMA_OFFLINE,
-    _PADRAO_COTA, selecionar_cronograma,
-    _buscar_tabelas_por_keyword,
-    _buscar_cronograma_por_keyword,
+    selecionar_cronograma,
+    recuperar_contexto, preaquecer,
+    RERANKER_ATIVO, RERANKER_MODELO, RERANKER_DEVICE, RERANKER_CANDIDATOS,
 )
 
 _DEBUG_CONTEXTO = os.getenv("DEBUG_CONTEXTO", "").strip() not in ("", "0", "false", "no")
@@ -97,62 +99,18 @@ def carregar_pipeline():
 
 
 def perguntar(pipeline, tabela_docs: list, cronograma_docs: list, pergunta: str, modelo_cfg: dict):
-    """Replica os passos de nucleo.responder() expondo timings e debug de contexto."""
+    """Mesmo retrieval de nucleo.responder() (nucleo.recuperar_contexto), expondo timings e debug de contexto."""
 
-    # ── [1] embed + retrieve ─────────────────────────────────────────
-    t0 = time.perf_counter()
-    resultado = pipeline.run({"embedder": {"text": pergunta}})
-    docs = resultado["retriever"]["documents"]
-    t_retrieval = time.perf_counter() - t0
-    print(f"[timing] embed+retrieve:      {t_retrieval:.3f}s  ({len(docs)} docs recuperados)")
-
-    # ── [2] pós-filtro de cota ───────────────────────────────────────
-    docs_antes = len(docs)
-    docs = [
-        d for d in docs
-        if (d.meta or {}).get("tipo") == "tabela" or not _PADRAO_COTA.search(d.content or "")
-    ]
-    if len(docs) < docs_antes:
-        print(f"[timing] pos_filtro_cota:     {docs_antes - len(docs)} chunk(s) removido(s)")
-
-    # ── [3] hybrid tabelas ───────────────────────────────────────────
-    t0_hib = time.perf_counter()
-    docs_tabela_extra = _buscar_tabelas_por_keyword(pergunta, tabela_docs, docs)
-    ids_tabela_extra = {d.id for d in docs_tabela_extra if d.id}
-
-    if docs_tabela_extra:
-        docs_tabela_ja   = [d for d in docs if (d.meta or {}).get("tipo") == "tabela"]
-        docs_texto_final = [d for d in docs if (d.meta or {}).get("tipo") != "tabela"][:6]
-        docs = docs_tabela_ja + docs_tabela_extra + docs_texto_final
-        print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  "
-              f"({len(docs_tabela_extra)} tabelas injetadas, {len(docs)} docs total)")
-    else:
-        print(f"[timing] hibrido_tabela:      {time.perf_counter() - t0_hib:.6f}s  (0 injetados)")
-
-    # ── [4] hybrid cronograma ────────────────────────────────────────
-    t0_crono = time.perf_counter()
-    docs_crono_extra = _buscar_cronograma_por_keyword(pergunta, cronograma_docs, docs)
-    ids_crono_extra = {d.id for d in docs_crono_extra if d.id}
-
-    if docs_crono_extra:
-        docs = docs_crono_extra + docs
-        print(f"[timing] hibrido_cronograma:  {time.perf_counter() - t0_crono:.6f}s  "
-              f"({len(docs_crono_extra)} cronograma injetados, {len(docs)} docs total)")
-    else:
-        print(f"[timing] hibrido_cronograma:  {time.perf_counter() - t0_crono:.6f}s  (0 injetados)")
+    # ── [1]-[5] retrieval: o MESMO caminho de nucleo.responder() (busca, reranker opcional, pós-filtro de
+    #    cotas, híbrido de tabelas e de cronograma, montagem do contexto) ──────────────────────────────
+    rc = recuperar_contexto(pergunta, pipeline, tabela_docs, cronograma_docs)
+    docs, contexto = rc["docs"], rc["contexto"]
+    t_retrieval, t_ctx = rc["t_retrieval"] + rc["t_rerank"], rc["t_contexto"]
+    ids_tabela_extra, ids_crono_extra = rc["ids_tabela_extra"], rc["ids_crono_extra"]
 
     if not docs:
         print("[timing] TOTAL (sem docs):    —")
         return
-
-    # ── [5] montagem do contexto ─────────────────────────────────────
-    t0 = time.perf_counter()
-    scores = [d.score for d in docs if d.score is not None]
-    contexto = "\n\n---\n\n".join(d.content for d in docs)
-    t_ctx = time.perf_counter() - t0
-    n_tabela = sum(1 for d in docs if (d.meta or {}).get("tipo") == "tabela")
-    print(f"[timing] montagem_contexto:   {t_ctx:.6f}s  ({len(contexto)} chars, "
-          f"{n_tabela} tabela(s) + {len(docs)-n_tabela} texto(s))")
 
     if _DEBUG_CONTEXTO:
         print()
@@ -200,6 +158,9 @@ def main():
     print()
 
     pipeline, tabela_docs, cronograma_docs = carregar_pipeline()
+    print(f"[setup] RERANKER_ATIVO={int(RERANKER_ATIVO)}"
+          + (f" modelo={RERANKER_MODELO} device={RERANKER_DEVICE} candidatos={RERANKER_CANDIDATOS}" if RERANKER_ATIVO else ""))
+    print(f"[setup] preaquecer: {preaquecer(pipeline)}")
     print()
 
     perguntas = [args.pergunta] if args.pergunta else PERGUNTAS

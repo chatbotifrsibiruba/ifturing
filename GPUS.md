@@ -51,6 +51,10 @@ A RX 9060 XT é AMD: o PyTorch CUDA não a enxerga, então embedder/reranker fic
 - **Fluxo completo:** `python teste_concorrencia.py --modelo gemma3:4b --concorrencia 1,2,4,8 --rodadas 3`
   (com `RERANKER_ATIVO=1 RERANKER_DEVICE=cuda` para incluir o reranker). Gera `resultado_concorrencia.csv/.md` (fora do git).
 - O `responder()` devolve `tempo_rerank_s` e `rerank_aplicado` por pergunta.
+- `responder()`, `teste_modelos.py` e `teste_timing.py` usam o MESMO retrieval (`nucleo.recuperar_contexto`), então
+  `RERANKER_ATIVO=1` vale nos três. `teste_modelos.py` imprime `RERANKER_ATIVO=… aplicado em N/total perguntas`,
+  grava `tempo_rerank_s`/`rerank_aplicado` no CSV/MD e **termina com erro** se o reranker não puder ser usado
+  (ou nunca for aplicado); se for aplicado só em parte, avisa no relatório. Procure `[timing] reranker:` no log.
 
 ## Segunda instância do Ollama na T1000 [hipótese]
 
