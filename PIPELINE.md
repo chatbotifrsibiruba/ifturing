@@ -44,6 +44,12 @@ Subconjunto relevante pré-carregado em memória:
 Tabelas **não são divididas**: cada linha da tabela vira um chunk próprio, sem
 passar pelo splitter.
 
+> **Fase 3:** o corpo (seções 1 a 20) agora é dividido por **item numerado** ("N.N."), com o título da seção
+> prefixado em cada chunk e teto de ~200 palavras (`IDX_CHUNKER=item_titulo`, padrão do `indexar.py`); cada chunk
+> de tabela ganha uma linha de cabeçalho com anexo e tipo de curso (`IDX_TABELA_CABECALHO`); os ids dos chunks não
+> dependem do caminho do arquivo. Detalhes e medições em `auditoria_indexacao.md`, Fase 3. A tabela acima descreve
+> o chunker anterior (`IDX_CHUNKER=atual`).
+
 ### Chunks de tabela indexados (dados reais, 30/09/2025)
 
 **Edital 2027 (9 chunks):**
@@ -179,13 +185,17 @@ Pergunta do usuário
     lógica dual:
       a) tipo-de-curso: "superiores" → expande para {licenciatura, bacharelado, superior}
       b) nome-específico: "informática" → busca literal em content.lower()
+      c) listar todos (TABELAS_LISTAR_TODAS, padrão ligado): "liste todos os cursos" — sem tipo nem nome na
+         pergunta — injeta as 9 tabelas (≈ 2 mil caracteres; Fase 3)
     injeta chunks de tabela não-semânticos (não presentes no top-10)
     ao injetar tabelas: textos são limitados a 6 chunks para preservar contexto
     limite hard: máximo 20 tabelas injetadas ([:20])
        │
        ▼
 [5] Retrieval híbrido de cronograma (por palavra-chave)
-    dispara se a pergunta contém alguma palavra de _PALAVRAS_CRONOGRAMA
+    dispara por PALAVRA INTEIRA, sem acento (CRONOGRAMA_GATILHO="palavra", padrão; Fase 3): "cronograma",
+    "calendário", "data(s)", "prazo(s)"; "quando"/"período"/"etapa" só junto de um evento do processo
+    (inscrição, prova, recurso, matrícula…). O gatilho antigo ("substring") fica em CRONOGRAMA_GATILHO="substring".
     busca nos chunks tipo="cronograma" pré-carregados
     CRONOGRAMA_MODO="todos" (padrão): injeta o cronograma inteiro
     CRONOGRAMA_MODO="topk": injeta só os 3 mais similares à pergunta (ranking semântico dentro do tipo)

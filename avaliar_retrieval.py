@@ -78,7 +78,6 @@ from nucleo import (
     PASTA_CHROMA,
     TOP_K,
     _PADRAO_COTA,
-    _PALAVRAS_CRONOGRAMA,
     _buscar_cronograma_por_keyword,
     _buscar_tabelas_por_keyword,
     cronograma_mais_similares,
@@ -87,10 +86,12 @@ from nucleo import (
 
 _PIPELINE_MD = Path(__file__).parent / "PIPELINE.md"
 _KS = (3, 5, 10)
-_MODOS = ("semantico", "hib-top3", "hib-todos")
+_MODOS_VALIDOS = ("semantico", "hib-top3", "hib-todos")
+_MODOS = ("semantico", "hib-todos")          # modos ativos; main() substitui por --modos
 _MODO_CRONO = {"hib-top3": "topk", "hib-todos": "todos"}   # modo híbrido → CRONOGRAMA_MODO de nucleo.py
 _GRUPOS = ("legado", "novas")
 _FOCO_PADRAO = "E03,F11a,F10c,F17b,F10a,F15a"
+_RANK_PADRAO = "A01,B01,B02,B03,B09,B12,B08,E02"
 _TABELAS_PADRAO = "B08,E02"
 
 # As 30 perguntas da fase 1 (linha de base). Não alterar: define o grupo "legado".
@@ -169,8 +170,9 @@ def evidencias_para(gab: dict, usar_legado: bool) -> list:
     return gab["evidencias"]
 
 
-def dispara_cronograma(pergunta: str) -> bool:
-    return any(kw in pergunta.lower() for kw in _PALAVRAS_CRONOGRAMA)
+def dispara_cronograma(pergunta: str, modo: str = None) -> bool:
+    """Gatilho do cronograma de nucleo.py (`modo`: 'palavra' | 'substring'; None = padrão de nucleo.py)."""
+    return nucleo.dispara_cronograma(pergunta, modo)
 
 
 # ── Execução do retrieval ─────────────────────────────────────────────────
@@ -179,9 +181,15 @@ class Colecao:
     """Uma coleção Chroma + embedder de consulta (com prefixo opcional) + docs pré-carregados."""
 
     def __init__(self, nome: str, caminho: str, prefixo_consulta: str, nome_colecao: str, top_k: int,
-                 usar_legado: bool):
+                 usar_legado: bool, opcoes: dict = None):
         if not Path(caminho).exists():
             sys.exit(f"ERRO: coleção não encontrada em {caminho}")
+        # opções de retrieval da coleção (sintaxe @chave=valor em --run): gatilho = palavra|substring (gatilho do
+        # cronograma); listar = 0|1 (injetar todas as tabelas em "liste todos os cursos"). None = padrão de nucleo.py
+        self.opcoes = dict(opcoes or {})
+        for chave in self.opcoes:
+            if chave not in ("gatilho", "listar"):
+                sys.exit(f"ERRO: opção desconhecida {chave!r} em --run (use gatilho= ou listar=)")
         self.nome = nome
         self.caminho = caminho
         self.prefixo_consulta = prefixo_consulta
@@ -228,7 +236,9 @@ class Colecao:
             d for d in docs_semanticos
             if (d.meta or {}).get("tipo") == "tabela" or not _PADRAO_COTA.search(d.content or "")
         ]
-        docs_tabela_extra = _buscar_tabelas_por_keyword(pergunta, self.tabela_docs, docs)
+        listar = self.opcoes.get("listar")
+        docs_tabela_extra = _buscar_tabelas_por_keyword(
+            pergunta, self.tabela_docs, docs, listar_todas=None if listar is None else listar not in ("0", "false"))
         if docs_tabela_extra:
             docs_tabela_ja = [d for d in docs if (d.meta or {}).get("tipo") == "tabela"]
             docs_texto_final = [d for d in docs if (d.meta or {}).get("tipo") != "tabela"][:6]
@@ -237,6 +247,7 @@ class Colecao:
             pergunta, self.cronograma_docs, docs,
             ranquear=lambda k: cronograma_mais_similares(self.pipeline, emb, k),
             modo="todos" if self.crono_legado else _MODO_CRONO[modo],
+            gatilho=self.opcoes.get("gatilho"),
         )
         if docs_crono_extra:
             docs = docs_crono_extra + docs
@@ -356,15 +367,16 @@ def _secao_cronograma(L: list, c: Colecao, gabarito: dict, ids_grupo: dict, ctx_
         n = len(d.content or "")
         L.append(f"| {_id8(d)} | {(d.meta or {}).get('secao', '—')} | {n:,} | {n / 3.5:,.0f} | "
                  f"{' '.join((d.content or '').split())[:60]!r} |")
-    perguntas = [q for g in _GRUPOS for q in ids_grupo[g] if dispara_cronograma(gabarito[q]["pergunta"])]
+    perguntas = [q for g in _GRUPOS for q in ids_grupo[g]
+                 if dispara_cronograma(gabarito[q]["pergunta"], c.opcoes.get("gatilho"))]
     L += ["", f"Perguntas que disparam o cronograma (palavra de `_PALAVRAS_CRONOGRAMA`): {len(perguntas)} — "
           f"{', '.join(perguntas)}", "",
           "Chunks de cronograma injetados, na ordem do contexto (os já presentes no top-10 semântico não são repetidos):", "",
-          "| id | hib-top3 | hib-todos |", "|---|---|---|"]
+          "| id | " + " | ".join(_MODOS[1:]) + " |", "|---" * (len(_MODOS)) + "|"]
     for q in perguntas:
         def ids(modo):
             return " ".join(i for i in ctx_ids[(c.nome, modo, q)]["crono"]) or "—"
-        L.append(f"| {q} | {ids('hib-top3')} | {ids('hib-todos')} |")
+        L.append(f"| {q} | " + " | ".join(ids(m) for m in _MODOS[1:]) + " |")
 
 
 def _secao_criterio_antigo(L: list, c: Colecao, gabarito: dict, ids_grupo: dict) -> None:
@@ -441,9 +453,123 @@ def _diagnostico_tabelas(c: Colecao, q: str, pergunta: str, docs_sem: list, ctx_
     return L
 
 
+_META_HIT_CTX = {"legado": 0.97, "novas": 0.90}
+_META_HIT10_SEM = 0.80
+_META_CTX_TOKENS = 4000
+_TOKENS_POR_CHAR = 1 / 3.5
+
+
+def _secao_metas(colecoes: list, res: dict, ids_grupo: dict) -> list:
+    """Metas da Fase 3 por coleção: hit@ctx do híbrido, hit@10 do semântico, E02 e contexto máximo."""
+    hib = _MODOS[-1]
+    L = ["", "## Metas da Fase 3", "",
+         f"Híbrido = modo `{hib}`. Tokens estimados = caracteres / 3,5. Meta de E02: evidências completas no contexto.", "",
+         "| coleção | meta | valor | alvo | atingida |", "|---|---|---|---|---|"]
+    for c in colecoes:
+        for g in _GRUPOS:
+            if not ids_grupo[g]:
+                continue
+            a_h = agregar([res[(c.nome, hib, q)] for q in ids_grupo[g]])
+            a_s = agregar([res[(c.nome, "semantico", q)] for q in ids_grupo[g]])
+            L.append(f"| {c.nome} | hit@ctx híbrido · {g} | {_pct(a_h['hit@ctx'])} | ≥ {_pct(_META_HIT_CTX[g])} | "
+                     f"{'sim' if a_h['hit@ctx'] >= _META_HIT_CTX[g] else '**não**'} |")
+            L.append(f"| {c.nome} | hit@10 semântico · {g} | {_pct(a_s['hit@10'])} | ≥ {_pct(_META_HIT10_SEM)} | "
+                     f"{'sim' if a_s['hit@10'] >= _META_HIT10_SEM else '**não**'} |")
+        if (c.nome, hib, "E02") in res:
+            r = res[(c.nome, hib, "E02")]
+            L.append(f"| {c.nome} | E02 (listar todos os cursos) | k_min={_fmt_k(r['k_min'])}, ev. no contexto "
+                     f"{r['cobertura'][10] if r['k_min'] is None else r['n_ev']}/{r['n_ev']} | completa no contexto | "
+                     f"{'sim' if r['k_min'] is not None else '**não**'} |")
+        maximo = max((res[(c.nome, hib, q)]["chars_ctx"] for g in _GRUPOS for q in ids_grupo[g]), default=0)
+        L.append(f"| {c.nome} | contexto máximo (híbrido) | {maximo:,} caracteres ≈ {maximo * _TOKENS_POR_CHAR:,.0f} tokens | "
+                 f"≤ {_META_CTX_TOKENS:,} tokens | {'sim' if maximo * _TOKENS_POR_CHAR <= _META_CTX_TOKENS else '**não**'} |")
+    return L
+
+
+def _secao_rank_tabelas(colecoes: list, gabarito: dict, rank_ev: dict, ids: list) -> list:
+    """Rank semântico (ranking completo da coleção, sem injeção) das perguntas de tabela: para cada evidência, o
+    melhor rank entre os chunks que a contêm; a pergunta é coberta por um top-k semântico quando k >= o maior deles."""
+    L = ["", "## Rank semântico das perguntas de tabela (sem injeção por palavra-chave)", "",
+         "Célula = **maior** entre os melhores ranks de cada evidência (o menor k semântico que cobre a pergunta inteira); "
+         "entre parênteses, o rank de cada evidência. \"≤10\" = já cobre no top-10 semântico. Objetivo do cabeçalho "
+         "de tabela: essas perguntas não dependerem da injeção por palavra-chave.", "",
+         "| id | pergunta | " + " | ".join(c.nome for c in colecoes) + " |", "|---|---|" + "---|" * len(colecoes)]
+    for q in ids:
+        cel = []
+        for c in colecoes:
+            por_ev = rank_ev.get((c.nome, q), {})
+            melhores = []
+            for e, achados in por_ev.items():
+                rs = [r for r, _ in achados if r is not None]
+                melhores.append(min(rs) if rs else None)
+            if not melhores or any(m is None for m in melhores):
+                cel.append("evidência fora do índice")
+            else:
+                cel.append(f"**{max(melhores)}**{' ✓' if max(melhores) <= 10 else ''} ({', '.join(map(str, melhores))})")
+        L.append(f"| {q} | {gabarito[q]['pergunta'][:50]} | " + " | ".join(cel) + " |")
+    return L
+
+
+def _secao_gatilho(gabarito: dict, ids: list) -> list:
+    """Quais perguntas disparam o cronograma no gatilho antigo (substring) e no novo (palavra inteira)."""
+    antigo = [q for q in ids if dispara_cronograma(gabarito[q]["pergunta"], "substring")]
+    novo = [q for q in ids if dispara_cronograma(gabarito[q]["pergunta"], "palavra")]
+    L = ["", "## Gatilho do cronograma (independe da coleção)", "",
+         f"- substring (antigo): **{len(antigo)}** perguntas disparam — {', '.join(antigo)}",
+         f"- palavra inteira (novo, padrão): **{len(novo)}** — {', '.join(novo)}",
+         f"- **deixam de disparar:** {', '.join(q for q in antigo if q not in novo) or '—'} · "
+         f"passam a disparar: {', '.join(q for q in novo if q not in antigo) or '—'}", "",
+         "| id | pergunta | antigo | novo |", "|---|---|---|---|"]
+    for q in antigo + [q for q in novo if q not in antigo]:
+        L.append(f"| {q} | {gabarito[q]['pergunta']} | {'sim' if q in antigo else 'não'} | {'sim' if q in novo else 'não'} |")
+    return L
+
+
+_ACEITE_PERGUNTAS = ("Que horas começa a prova?", None)       # None = pergunta do gabarito F11a
+_ACEITE_EVIDENCIAS = ("8h30min (oito horas e trinta minutos)", "14h (catorze horas)")
+
+
+def _aceite_f11a(c: Colecao, gabarito: dict) -> list:
+    """Teste de aceitação (só retrieval): o contexto híbrido de "Que horas começa a prova?" traz 8h30min e 14h?"""
+    hib = _MODOS[-1]
+    L = ["", f"### {c.nome}", ""]
+    for texto in _ACEITE_PERGUNTAS:
+        pergunta = texto or gabarito["F11a"]["pergunta"]
+        sem, emb, _ = c.semantico(pergunta)
+        docs = c.hibrido(pergunta, sem, emb, hib)
+        textos = [_norm(d.content or "") for d in docs]
+        achou = {e: [i + 1 for i, t in enumerate(textos) if _norm(e) in t] for e in _ACEITE_EVIDENCIAS}
+        ok = all(achou.values())
+        portao = [i + 1 for i, t in enumerate(textos) if "7h45min" in t]
+        L.append(f"- **{'PASSOU' if ok else 'FALHOU'}** · \"{pergunta}\" · contexto com {len(docs)} chunks · "
+                 + " · ".join(f"`{e}` na posição {achou[e] or 'AUSENTE'}" for e in _ACEITE_EVIDENCIAS)
+                 + f" · chunk do portão (7h45min) na posição {portao or 'ausente'}")
+        if ok:
+            ids_ok = {_id8(d) for d, t in zip(docs, textos) if any(_norm(e) in t for e in _ACEITE_EVIDENCIAS)}
+            L.append(f"  - chunk(s) com a evidência: {', '.join(sorted(ids_ok))}")
+        else:
+            L += [f"  - {i}. {_chunk_resumo(d)}" for i, d in enumerate(docs[:5], 1)]
+    return L
+
+
+def _secao_custo_tabelas(colecoes: list, res: dict) -> list:
+    """Custo, em caracteres, de injetar as tabelas inteiras (critério 'listar todos os cursos')."""
+    hib = _MODOS[-1]
+    L = ["", "## Custo de injetar todas as tabelas (critério \"listar todos os cursos\")", "",
+         "| coleção | tabelas | caracteres (tabelas unidas por `\\n\\n---\\n\\n`) | tokens estimados | contexto de E02 no híbrido |",
+         "|---|---|---|---|---|"]
+    for c in colecoes:
+        total = len("\n\n---\n\n".join(d.content or "" for d in c.tabela_docs))
+        e02 = res.get((c.nome, hib, "E02"))
+        ctx = (f"{e02['n_contexto']} chunks · {e02['chars_ctx']:,} caracteres ≈ {e02['chars_ctx'] * _TOKENS_POR_CHAR:,.0f} tokens"
+               if e02 else "—")
+        L.append(f"| {c.nome} | {len(c.tabela_docs)} | {total:,} | {total * _TOKENS_POR_CHAR:,.0f} | {ctx} |")
+    return L
+
+
 def gerar_relatorio(colecoes: list, gabarito: dict, ids_grupo: dict, negativas: list, sem_evidencia: list,
                     res: dict, docs_top: dict, ausentes: dict, rank_ev: dict, ctx_ids: dict,
-                    diag_tabelas: dict, foco: list) -> str:
+                    diag_tabelas: dict, foco: list, aceite: list = None, rank_ids: list = None) -> str:
     todos_ids = [q for g in _GRUPOS for q in ids_grupo[g]]
     L = ["# Avaliação de retrieval", ""]
     L.append(f"- Perguntas avaliadas: **legado {len(ids_grupo['legado'])}** (fase 1) · **novas {len(ids_grupo['novas'])}**. "
@@ -455,11 +581,19 @@ def gerar_relatorio(colecoes: list, gabarito: dict, ids_grupo: dict, negativas: 
              "`--legado` só existe para comparar com o índice antigo da fase 1 (EVIDENCIA_LEGADO).")
     for c in colecoes:
         tipos = ", ".join(f"{t}={n}" for t, n in sorted(c.por_tipo.items()))
-        L.append(f"- Coleção **{c.nome}**: `{c.caminho}` — {c.n_chunks} chunks ({tipos}) · cronograma: {_nota_cronograma(c)} · "
-                 f"prefixo da consulta: `{c.prefixo_consulta!r}` · evidência: {_nota_evidencia(c)}")
+        corpo = sorted(len((d.content or "").split()) for d in c.todos if (d.meta or {}).get("tipo") == "corpo")
+        mistos = sum(1 for d in c.todos if "," in str((d.meta or {}).get("secoes", "")))
+        tam = (f" · corpo: {len(corpo)} chunks, mediana {corpo[len(corpo) // 2]} palavras, máx {corpo[-1]}, "
+               f"**{mistos} com 2+ seções de nível 1**") if corpo else ""
+        L.append(f"- Coleção **{c.nome}**: `{c.caminho}` — {c.n_chunks} chunks ({tipos}){tam} · "
+                 f"cronograma: {_nota_cronograma(c)} · "
+                 f"prefixo da consulta: `{c.prefixo_consulta!r}` · opções: {c.opcoes or 'padrão de nucleo.py'} · "
+                 f"evidência: {_nota_evidencia(c)}")
     L += ["", "Modos: **semantico** = top-10 do Chroma; **hib-top3** = fluxo de `nucleo.responder()` injetando os "
           f"{nucleo.CRONOGRAMA_TOP_K} chunks tipo=cronograma mais similares à pergunta (ranking semântico dentro do tipo); "
-          "**hib-todos** = idem, injetando o cronograma inteiro.", "",
+          "**hib-todos** = idem, injetando o cronograma inteiro. "
+          f"Ativos nesta execução: {', '.join(_MODOS)}. Opções por coleção: "
+          + "; ".join(f"{c.nome} → {c.opcoes or 'padrão de nucleo.py'}" for c in colecoes) + ".", "",
           "Definições: *k_min* = menor k cujos k primeiros chunks contêm TODAS as evidências; "
           "*hit@k* = k_min ≤ k; *MRR* = média de 1/k_min; *hit@ctx* = coberto pelo contexto inteiro "
           "(no modo híbrido o contexto pode ter mais de 10 chunks); *chars_ctx* = média de caracteres do contexto "
@@ -476,18 +610,26 @@ def gerar_relatorio(colecoes: list, gabarito: dict, ids_grupo: dict, negativas: 
                     L.append(f"| {c.nome} | {g} | {modo} | {a['n']} | {_pct(a['hit@3'])} | {_pct(a['hit@5'])} | "
                              f"{_pct(a['hit@10'])} | {a['mrr']:.3f} | {_pct(a['hit@ctx'])} | {a['chars']:,.0f} |")
 
-    L += ["", "### Só as perguntas que disparam o cronograma (palavras de `_PALAVRAS_CRONOGRAMA`)", "",
+    L += ["", "### Só as perguntas que disparam o cronograma (gatilho de cada coleção)", "",
           "| coleção | grupo | modo | n | hit@3 | hit@5 | hit@10 | MRR | hit@ctx | chars_ctx |",
           "|---|---|---|---|---|---|---|---|---|---|"]
     for g in _GRUPOS:
         for c in colecoes:
-            qs = [q for q in ids_grupo[g] if dispara_cronograma(gabarito[q]["pergunta"])]
+            qs = [q for q in ids_grupo[g] if dispara_cronograma(gabarito[q]["pergunta"], c.opcoes.get("gatilho"))]
             for modo in _MODOS:
                 a = agregar([res[(c.nome, modo, q)] for q in qs])
                 if a["n"]:
                     L.append(f"| {c.nome} | {g} | {modo} | {a['n']} | {_pct(a['hit@3'])} | {_pct(a['hit@5'])} | "
                              f"{_pct(a['hit@10'])} | {a['mrr']:.3f} | {_pct(a['hit@ctx'])} | {a['chars']:,.0f} |")
 
+    L += _secao_metas(colecoes, res, ids_grupo)
+    if rank_ids:
+        L += _secao_rank_tabelas(colecoes, gabarito, rank_ev, [q for q in rank_ids if q in gabarito])
+    L += _secao_gatilho(gabarito, [q for g in _GRUPOS for q in ids_grupo[g]])
+    L += _secao_custo_tabelas(colecoes, res)
+    if aceite:
+        L += ["", "## Teste de aceitação F11a (só retrieval, sem LLM)", "",
+              f"Contexto do modo `{_MODOS[-1]}` precisa conter `{_ACEITE_EVIDENCIAS[0]}` e `{_ACEITE_EVIDENCIAS[1]}`."] + aceite
     L += ["", "## Tamanho do contexto no modo híbrido", "",
           "O contexto inteiro vai para o LLM (`nucleo.responder()`), e `chamar_ollama` usa `num_ctx=8192` tokens "
           "(prompt de ~1,5 mil caracteres + resposta de até 1024 tokens). Tokens estimados = caracteres / 3,5 "
@@ -520,17 +662,19 @@ def gerar_relatorio(colecoes: list, gabarito: dict, ids_grupo: dict, negativas: 
 
     for c in colecoes:
         L += ["", f"## Por pergunta — {c.nome}", "",
-              "| id | grupo | pergunta | n ev. | ev. no índice | k_min sem. | k_min top3 | k_min todos | ctx top3 | ctx todos "
-              "| ev.@10 sem. | ev.@10 top3 | ev.@10 todos |",
-              "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+              "| id | grupo | pergunta | n ev. | ev. no índice | "
+              + " | ".join(f"k_min {m}" for m in _MODOS) + " | " + " | ".join(f"ctx {m}" for m in _MODOS[1:]) + " | "
+              + " | ".join(f"ev.@10 {m}" for m in _MODOS) + " |",
+              "|---" * (5 + 2 * len(_MODOS) + len(_MODOS) - 1) + "|"]
         for g in _GRUPOS:
             for q in ids_grupo[g]:
-                s, t3, td = (res[(c.nome, m, q)] for m in _MODOS)
-                n_ev = s["n_ev"]
+                rs = [res[(c.nome, m, q)] for m in _MODOS]
+                n_ev = rs[0]["n_ev"]
                 n_idx = n_ev - len(ausentes[(c.nome, q)])
-                L.append(f"| {q} | {g} | {gabarito[q]['pergunta'][:60]} | {n_ev} | {n_idx}/{n_ev} | {_fmt_k(s['k_min'])} | "
-                         f"{_fmt_k(t3['k_min'])} | {_fmt_k(td['k_min'])} | {t3['n_contexto']} | {td['n_contexto']} | "
-                         f"{s['cobertura'][10]}/{n_ev} | {t3['cobertura'][10]}/{n_ev} | {td['cobertura'][10]}/{n_ev} |")
+                L.append(f"| {q} | {g} | {gabarito[q]['pergunta'][:60]} | {n_ev} | {n_idx}/{n_ev} | "
+                         + " | ".join(_fmt_k(r["k_min"]) for r in rs) + " | "
+                         + " | ".join(str(r["n_contexto"]) for r in rs[1:]) + " | "
+                         + " | ".join(f"{r['cobertura'][10]}/{n_ev}" for r in rs) + " |")
 
     def linhas_posicao(c, modo, q, so_faltando: bool) -> list:
         r = res[(c.nome, modo, q)]
@@ -580,7 +724,7 @@ def gerar_relatorio(colecoes: list, gabarito: dict, ids_grupo: dict, negativas: 
                 continue
             status = " · ".join(f"{m}: k_min={_fmt_k(res[(c.nome, m, q)]['k_min'])}" for m in _MODOS)
             L += [f"**{c.nome} · {q}** — {gabarito[q]['pergunta']} ({status})", ""] + cab_pos
-            L += linhas_posicao(c, "hib-todos", q, so_faltando=False)
+            L += linhas_posicao(c, _MODOS[-1], q, so_faltando=False)
             L.append("")
 
     L += ["", "## Tabelas do campus no contexto híbrido (B08, E02…)", "",
@@ -650,12 +794,20 @@ def salvar_csv(caminho: Path, colecoes: list, gabarito: dict, ids_grupo: dict, r
 # ── Main ──────────────────────────────────────────────────────────────────
 
 def _parse_run(txt: str) -> tuple:
-    """'NOME=CAMINHO[::PREFIXO]' → (nome, caminho, prefixo)."""
+    """'NOME=CAMINHO[::PREFIXO][@chave=valor,…]' → (nome, caminho, prefixo, opções).
+    Opções de retrieval da coleção: gatilho=palavra|substring, listar=0|1 (ver Colecao)."""
     if "=" not in txt:
-        sys.exit(f"ERRO: --run espera NOME=CAMINHO[::PREFIXO], recebido {txt!r}")
+        sys.exit(f"ERRO: --run espera NOME=CAMINHO[::PREFIXO][@chave=valor,…], recebido {txt!r}")
     nome, resto = txt.split("=", 1)
+    opcoes: dict = {}
+    if "@" in resto:
+        resto, _, bruto = resto.rpartition("@")
+        for par in bruto.split(","):
+            if par.strip():
+                k, _, v = par.partition("=")
+                opcoes[k.strip()] = v.strip()
     caminho, _, prefixo = resto.partition("::")
-    return nome.strip(), caminho.strip(), prefixo
+    return nome.strip(), caminho.strip(), prefixo, opcoes
 
 
 def _lista_ids(txt: str, gabarito: dict, opcao: str) -> list:
@@ -667,11 +819,16 @@ def _lista_ids(txt: str, gabarito: dict, opcao: str) -> list:
 
 
 def main() -> None:
+    global _MODOS
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="Avalia o retrieval contra a coluna EVIDENCIA do PIPELINE.md")
-    ap.add_argument("--run", action="append", default=[], metavar="NOME=CAMINHO[::PREFIXO]",
-                    help="coleção a avaliar (repetível). Padrão: producao=$PASTA_CHROMA")
+    ap.add_argument("--run", action="append", default=[], metavar="NOME=CAMINHO[::PREFIXO][@chave=valor,…]",
+                    help="coleção a avaliar (repetível). Padrão: producao=$PASTA_CHROMA. Opções: gatilho=palavra|"
+                         "substring (gatilho do cronograma), listar=0|1 (injetar todas as tabelas em \"liste todos\")")
+    ap.add_argument("--modos", default=",".join(_MODOS),
+                    help=f"modos avaliados, de {','.join(_MODOS_VALIDOS)} (padrão: %(default)s; o último é o 'híbrido' "
+                         "das metas)")
     ap.add_argument("--legado", action="append", default=[], metavar="NOME",
                     help="usa EVIDENCIA_LEGADO (fase 1) nas perguntas do grupo legado para esta coleção; só para "
                          "comparar com o índice ANTIGO (repetível)")
@@ -679,6 +836,8 @@ def main() -> None:
     ap.add_argument("--top-k", type=int, default=TOP_K, help=f"top_k do retriever semântico (padrão: {TOP_K})")
     ap.add_argument("--ids", default=None, help='IDs do gabarito, ex.: "C01,C03,A04" (padrão: todos com EVIDENCIA)')
     ap.add_argument("--foco", default=_FOCO_PADRAO, help=f"perguntas detalhadas na seção Foco (padrão: {_FOCO_PADRAO})")
+    ap.add_argument("--rank", default=_RANK_PADRAO,
+                    help=f"perguntas da tabela de rank semântico (padrão: {_RANK_PADRAO})")
     ap.add_argument("--tabelas", default=_TABELAS_PADRAO,
                     help=f"perguntas para o diagnóstico de tabelas no contexto (padrão: {_TABELAS_PADRAO})")
     ap.add_argument("--saida", default="retrieval_resultado", help="prefixo dos arquivos de saída")
@@ -696,14 +855,21 @@ def main() -> None:
         ids = [i for i in pedidos if i in ids]
     foco = _lista_ids(args.foco, gabarito, "--foco")
     q_tabelas = _lista_ids(args.tabelas, gabarito, "--tabelas")
+    rank_ids = [q for q in _lista_ids(args.rank, gabarito, "--rank") if q in ids]
     ids_grupo = {g: [q for q in ids if gabarito[q]["grupo"] == g] for g in _GRUPOS}
 
-    runs = [_parse_run(r) for r in args.run] or [("producao", PASTA_CHROMA, "")]
-    nomes = [n for n, _, _ in runs]
+    modos = tuple(m.strip() for m in args.modos.split(",") if m.strip())
+    if not modos or modos[0] != "semantico" or any(m not in _MODOS_VALIDOS for m in modos) or len(modos) < 2:
+        sys.exit(f"ERRO: --modos deve começar por semantico e ter ao menos um híbrido de {_MODOS_VALIDOS}")
+    _MODOS = modos
+
+    runs = [_parse_run(r) for r in args.run] or [("producao", PASTA_CHROMA, "", {})]
+    nomes = [n for n, _, _, _ in runs]
     for n in args.legado:
         if n not in nomes:
             sys.exit(f"ERRO: --legado {n!r} não corresponde a nenhum --run ({nomes})")
-    colecoes = [Colecao(n, p, pref, args.colecao, args.top_k, usar_legado=(n in args.legado)) for n, p, pref in runs]
+    colecoes = [Colecao(n, p, pref, args.colecao, args.top_k, usar_legado=(n in args.legado), opcoes=opc)
+                for n, p, pref, opc in runs]
 
     res: dict = {}
     docs_top: dict = {}
@@ -737,10 +903,14 @@ def main() -> None:
                     "crono": [_id8(d) for d in docs if d.id in ids_crono and d.id not in {x.id for x in sem}],
                 }
             if q in q_tabelas:
-                diag_tabelas[c.nome][q] = _diagnostico_tabelas(c, q, pergunta, sem, listas["hib-todos"])
+                diag_tabelas[c.nome][q] = _diagnostico_tabelas(c, q, pergunta, sem, listas[_MODOS[-1]])
 
+    aceite = []
+    if "F11a" in gabarito:
+        for c in colecoes:
+            aceite += _aceite_f11a(c, gabarito)
     relatorio = gerar_relatorio(colecoes, gabarito, ids_grupo, negativas, sem_ev, res, docs_top, ausentes,
-                                rank_ev, ctx_ids, diag_tabelas, foco)
+                                rank_ev, ctx_ids, diag_tabelas, foco, aceite, rank_ids)
     base = Path(__file__).parent / args.saida
     base.with_suffix(".md").write_text(relatorio, encoding="utf-8")
     salvar_csv(base.with_suffix(".csv"), colecoes, gabarito, ids_grupo, res, ausentes)

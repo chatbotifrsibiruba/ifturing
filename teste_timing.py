@@ -35,7 +35,7 @@ from haystack_integrations.document_stores.chroma import ChromaDocumentStore
 from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
 
 from nucleo import (
-    PASTA_CHROMA, MODELO_EMB, TOP_K, EMBEDDER_DEVICE,
+    PASTA_CHROMA, MODELO_EMB, TOP_K, EMBEDDER_DEVICE, PREFIXO_CONSULTA,
     MODELOS, MODELO_PADRAO_SIMPLES,
     perguntar_llm,
     _OllamaOffline, _MSG_OLLAMA_OFFLINE,
@@ -84,6 +84,7 @@ def carregar_pipeline():
         SentenceTransformersTextEmbedder(
             model=MODELO_EMB,
             device=ComponentDevice.from_str(EMBEDDER_DEVICE),
+            prefix=PREFIXO_CONSULTA,
         ),
     )
     pipeline.add_component(

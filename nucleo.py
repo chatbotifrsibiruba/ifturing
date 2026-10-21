@@ -6,6 +6,7 @@ Sem layout ou CSS do Streamlit.
 import os
 import re
 import time
+import unicodedata
 import traceback
 import psutil
 import requests
@@ -39,12 +40,53 @@ _PADRAO_COTA = re.compile(r"C\d{1,2}:")
 CRONOGRAMA_MODO  = os.getenv("CRONOGRAMA_MODO", "todos").strip().lower()
 CRONOGRAMA_TOP_K = 3
 
-# Palavras que disparam o retrieval híbrido de cronograma/datas
+def _flag(nome: str, padrao: str = "") -> bool:
+    return os.getenv(nome, padrao).strip().lower() not in ("", "0", "false", "no", "nao", "não")
+
+
+# Prefixos do E5 ("query: " na consulta; o indexador usa "passage: " nos chunks). Só têm efeito se o ÍNDICE
+# tiver sido construído com o mesmo E5_PREFIXOS (ver indexar.py); desligado por padrão.
+E5_PREFIXOS     = _flag("E5_PREFIXOS")
+PREFIXO_CONSULTA = "query: " if E5_PREFIXOS else ""
+
+# Gatilho do cronograma (perguntas de data/prazo):
+#   "palavra"    casamento por PALAVRA INTEIRA, sem acento (padrão): termos fortes sozinhos; termos ambíguos
+#                ("quando", "período", "etapa") só junto de um evento do processo (inscrição, prova, recurso…)
+#   "substring"  comportamento antigo (fase 2C): qualquer _PALAVRAS_CRONOGRAMA dentro do texto — "data" dispara
+#                em "candidata", "inscrição" em "taxa de inscrição", "período" em "período noturno"
+CRONOGRAMA_GATILHO = os.getenv("CRONOGRAMA_GATILHO", "palavra").strip().lower()
+
+# Palavras do gatilho antigo (modo "substring")
 _PALAVRAS_CRONOGRAMA = frozenset({
     "data", "datas", "cronograma", "prazo", "prazos",
     "inscrição", "inscricao", "quando", "período", "periodo",
     "calendário", "calendario", "etapa", "etapas",
 })
+
+_RE_CRONO_FORTE = re.compile(r"\b(?:cronograma|calendario|datas?|prazos?)\b")
+_RE_CRONO_AMBIGUO = re.compile(r"\b(?:quando|periodos?|etapas?)\b")
+_RE_EVENTO_PROCESSO = re.compile(
+    r"\b(?:inscri\w*|provas?|resultados?|classifica\w*|matriculas?|pre-matriculas?|recursos?|chamadas?|"
+    r"sorteios?|divulga\w*|publica\w*|gabaritos?|isencao|isencoes|convoca\w*|homologa\w*|"
+    r"processo\s+seletivo|locais\s+de\s+prova)\b"
+)
+
+
+def _sem_acento(texto: str) -> str:
+    t = unicodedata.normalize("NFKD", texto.lower())
+    return "".join(c for c in t if not unicodedata.combining(c))
+
+
+def dispara_cronograma(pergunta: str, modo: str = None) -> bool:
+    """A pergunta é de data/prazo (injeta o cronograma)? `modo` = CRONOGRAMA_GATILHO ('palavra'|'substring')."""
+    modo = (modo or CRONOGRAMA_GATILHO)
+    if modo == "substring":
+        pl = pergunta.lower()
+        return any(kw in pl for kw in _PALAVRAS_CRONOGRAMA)
+    if modo != "palavra":
+        raise ValueError(f"CRONOGRAMA_GATILHO inválido: {modo!r} (use 'palavra' ou 'substring')")
+    t = _sem_acento(pergunta)
+    return bool(_RE_CRONO_FORTE.search(t) or (_RE_CRONO_AMBIGUO.search(t) and _RE_EVENTO_PROCESSO.search(t)))
 
 # Palavras que disparam a lógica de retrieval híbrido de tabelas
 _PALAVRAS_TABELA = frozenset({
@@ -57,6 +99,12 @@ _PALAVRAS_TABELA = frozenset({
     "agropecuária", "informática", "administração", "matemática",
     "computação", "ciência", "química", "agronomia", "engenharia",
 })
+
+# "Listar todos os cursos do campus": sem tipo de curso nem nome específico na pergunta, injeta as tabelas
+# inteiras (custo ≈ 2 mil caracteres por 9 tabelas; ver auditoria_indexacao.md, Fase 3).
+TABELAS_LISTAR_TODAS = _flag("TABELAS_LISTAR_TODAS", "1")
+_RE_LISTAR_CURSOS = re.compile(r"\b(?:liste|listar|lista|todos|todas|quais)\b")
+_RE_CURSOS = re.compile(r"\bcursos?\b")
 
 _STOP_HIBRIDO = frozenset({
     "quais", "qual", "são", "está", "estão", "para", "com", "dos", "das",
@@ -122,6 +170,7 @@ def _buscar_cronograma_por_keyword(
     docs_semanticos: list,
     ranquear=None,
     modo: str = None,
+    gatilho: str = None,
 ) -> list:
     """Injeta chunks de cronograma (meta tipo="cronograma") quando a pergunta menciona datas/prazos.
 
@@ -134,13 +183,13 @@ def _buscar_cronograma_por_keyword(
       "topk"   só os CRONOGRAMA_TOP_K mais similares à pergunta, do mais para o menos similar;
                exige `ranquear`, função k -> chunks ordenados por similaridade (ver
                cronograma_mais_similares), chamada só quando a pergunta dispara o cronograma
+    gatilho (padrão CRONOGRAMA_GATILHO): ver dispara_cronograma().
     """
     if not cronograma_docs:
         return []
-    pergunta_lower = pergunta.lower()
-    if not any(kw in pergunta_lower for kw in _PALAVRAS_CRONOGRAMA):
+    if not dispara_cronograma(pergunta, gatilho):
         if _DEBUG_HIBRIDO:
-            print("[debug_hibrido] pergunta sem palavras de _PALAVRAS_CRONOGRAMA → skip cronograma")
+            print("[debug_hibrido] pergunta não dispara o cronograma → skip")
         return []
     modo = modo or CRONOGRAMA_MODO
     if modo == "topk":
@@ -185,6 +234,7 @@ def _buscar_tabelas_por_keyword(
     pergunta: str,
     tabela_docs: list,
     docs_semanticos: list,
+    listar_todas: bool = None,
 ) -> list:
     """Retorna chunks de tabela relevantes à pergunta por tipo-de-curso e por nome.
 
@@ -194,6 +244,9 @@ def _buscar_tabelas_por_keyword(
        e TODOS os chunks desses tipos são incluídos.
     2. Nome-específico: demais termos não-genéricos são buscados literalmente no
        conteúdo do chunk, com variante singular/plural simples (±s final).
+
+    3. Listar todos (TABELAS_LISTAR_TODAS): se a pergunta pede lista/"todos"/"quais" cursos e os critérios
+       1 e 2 não acharam nada (sem tipo de curso nem nome específico), injeta TODAS as tabelas.
 
     Só dispara se a pergunta contiver alguma palavra de _PALAVRAS_TABELA.
     Remove documentos já presentes em docs_semanticos (dedup por id).
@@ -254,6 +307,15 @@ def _buscar_tabelas_por_keyword(
             continue
         if bate_tipo or bate_nome:
             resultado.append(doc)
+
+    if listar_todas is None:
+        listar_todas = TABELAS_LISTAR_TODAS
+    if listar_todas and not tipos_solicitados and not resultado:
+        t = _sem_acento(pergunta)
+        if _RE_CURSOS.search(t) and _RE_LISTAR_CURSOS.search(t):
+            resultado = [d for d in tabela_docs if d.id not in ids_semanticos]
+            if _DEBUG_HIBRIDO:
+                print(f"[debug_hibrido] listar todos os cursos → {len(resultado)} tabelas injetadas")
 
     return resultado[:20]
 
@@ -357,6 +419,7 @@ def carregar_pipeline():
         SentenceTransformersTextEmbedder(
             model=MODELO_EMB,
             device=ComponentDevice.from_str(EMBEDDER_DEVICE),
+            prefix=PREFIXO_CONSULTA,
         ),
     )
     pipeline.add_component("retriever", ChromaEmbeddingRetriever(document_store=document_store, top_k=TOP_K))
@@ -487,24 +550,54 @@ def chamar_maritaca(prompt: str, modelo: str) -> dict:
     }
 
 
-def perguntar_llm(pergunta: str, contexto: str, modelo_cfg: dict) -> dict:
-    t0 = time.perf_counter()
-    prompt = f"""Você é um assistente especializado nos documentos do processo seletivo do IFRS.
+_RE_PEDE_CURSOS = re.compile(
+    r"\b(?:cursos?|tecnic\w+|superiores|bacharelad\w+|licenciatur\w+|graduacao|tecnolog\w+|"
+    r"integrados?|subsequentes?|concomitantes?)\b"
+)
+
+_PROMPT_REGRAS_COMUNS = """Você é um assistente especializado nos documentos do processo seletivo do IFRS.
 ESCOPO: Todas as informações fornecidas no contexto abaixo referem-se exclusivamente ao IFRS – Campus Ibirubá (Instituto Federal do Rio Grande do Sul, Campus Ibirubá). Ao responder, trate o contexto como sendo sempre sobre esse campus específico — não presuma nem mencione outros campi do IFRS, a menos que o usuário pergunte explicitamente sobre outro campus.
 Responda à pergunta usando SOMENTE as informações do contexto abaixo.
 Regras obrigatórias:
 - Responda diretamente, em português, sem introduções nem rótulos como "Resposta:", "Inferência:" ou similares.
-- Nunca comente sobre como a resposta foi construída, deduzida ou inferida.
-- COMPLETUDE OBRIGATÓRIA: ao listar cursos, percorra TODO o contexto e inclua TODOS os cursos do tipo perguntado. Cada linha que começa com "Curso:" é um curso diferente — não pule nem omita nenhum. Só encerre a lista depois de verificar todas as linhas "Curso:" presentes.
-- Use exatamente os nomes, turnos e dados que aparecem no contexto — não invente nem complete informações ausentes.
-- Cada linha do contexto é um registro independente: use APENAS os dados que aparecem juntos na MESMA linha. Nunca combine o nome de um curso com turno, duração ou vagas de uma linha diferente.
-- Se o contexto trouxer cursos de categorias diferentes (técnico integrado, técnico subsequente, superior), responda apenas com os cursos que pertencem à categoria perguntada, sem misturar categorias.
-- Se a informação não estiver no contexto, responda apenas: "Não encontrei essa informação nos documentos."
+- Nunca comente sobre como a resposta foi construída, deduzida ou inferida."""
 
-Contexto:
-{contexto}
+_PROMPT_REGRAS_CURSOS = """- COMPLETUDE OBRIGATÓRIA (a pergunta pede cursos): percorra TODO o contexto e inclua TODOS os cursos do tipo perguntado. Cada linha do contexto que começa com "Curso:" é um curso diferente — não pule nem omita nenhum. Só encerre a lista depois de verificar todas as linhas "Curso:" presentes. Isso vale só para listar cursos.
+- Se o contexto trouxer cursos de categorias diferentes (técnico integrado, técnico subsequente, superior), responda apenas com os cursos que pertencem à categoria perguntada, sem misturar categorias."""
 
-Pergunta: {pergunta}"""
+# Os exemplos de rótulo dependem do tipo de pergunta: citar "Curso:" numa pergunta de data induziria o modelo a
+# imitar justamente esse prefixo ("Curso: 30/09 a 19/10/2026 | …").
+_ROTULOS_CURSOS = '"Curso:", "Turnos:", "Duração (semestres):", "Total de Vagas:"'
+_ROTULOS_DATAS = '"Data:", "Evento:"'
+
+_PROMPT_REGRA_REGISTRO = """- Cada linha do contexto no formato "Rótulo: valor | Rótulo: valor" (ex.: {exemplo}) é um registro independente: use APENAS os dados que aparecem juntos na MESMA linha. Nunca combine dados de linhas diferentes."""
+
+_PROMPT_REGRA_FRASE = """- Escreva a resposta em frases próprias. NÃO copie linhas do contexto e NÃO use os rótulos do contexto ({rotulos}) no texto da resposta; para uma lista, escreva um item por linha só com os nomes e os dados pedidos."""
+
+_PROMPT_REGRAS_FINAIS = """- Use exatamente os nomes, turnos, datas e dados que aparecem no contexto — não invente nem complete informações ausentes.
+{registro}
+{frase}
+- Se a informação não estiver no contexto, responda apenas: "Não encontrei essa informação nos documentos.\""""
+
+
+def montar_prompt(pergunta: str, contexto: str) -> str:
+    """Prompt do LLM. As regras de listagem de cursos ("Curso:") e os exemplos de rótulo de curso só entram quando a
+    pergunta fala de cursos; a de responder em frases próprias, sem copiar linhas cruas nem rótulos do contexto,
+    vale sempre (com os rótulos "Data:"/"Evento:" nas demais perguntas)."""
+    pede_cursos = bool(_RE_PEDE_CURSOS.search(_sem_acento(pergunta)))
+    regras = [_PROMPT_REGRAS_COMUNS]
+    if pede_cursos:
+        regras.append(_PROMPT_REGRAS_CURSOS)
+    exemplo = '"Curso: … | Turnos: … | Total de Vagas: …"' if pede_cursos else '"Data: … | Evento: …"'
+    regras.append(_PROMPT_REGRAS_FINAIS.format(
+        registro=_PROMPT_REGRA_REGISTRO.format(exemplo=exemplo),
+        frase=_PROMPT_REGRA_FRASE.format(rotulos=_ROTULOS_CURSOS if pede_cursos else _ROTULOS_DATAS)))
+    return "\n".join(regras) + f"\n\nContexto:\n{contexto}\n\nPergunta: {pergunta}"
+
+
+def perguntar_llm(pergunta: str, contexto: str, modelo_cfg: dict) -> dict:
+    t0 = time.perf_counter()
+    prompt = montar_prompt(pergunta, contexto)
     print(f"[timing] montagem_prompt:     {time.perf_counter() - t0:.6f}s  ({len(prompt)} chars total)")
     if modelo_cfg.get("tipo") == "maritaca":
         return chamar_maritaca(prompt, modelo_cfg["modelo"])

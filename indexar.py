@@ -17,6 +17,8 @@ Fase 2 da auditoria (ver auditoria_indexacao.md):
 """
 
 import collections
+import dataclasses
+import hashlib
 import os
 import re
 import shutil
@@ -34,6 +36,30 @@ from haystack_integrations.document_stores.chroma import ChromaDocumentStore
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _env_flag(nome: str, padrao: str = "0") -> bool:
+    return os.getenv(nome, padrao).strip().lower() not in ("", "0", "false", "no", "nao", "não")
+
+
+# ── Variantes da Fase 3 (cada uma controlada por variável de ambiente; ver auditoria_indexacao.md) ──
+#   Padrões = melhor configuração medida na Fase 3 (chunker item_titulo, cabeçalho de tabela ligado, ids estáveis,
+#   prefixos E5 DESLIGADOS: só ligue E5_PREFIXOS ao reindexar e consultar com o mesmo valor).
+#   IDX_CHUNKER           atual | item | item_titulo   chunker do CORPO (seções 1 a 20): janela de 150 palavras por
+#                         página (atual) × um chunk por item numerado "N.N." (item) × idem com o título da seção
+#                         prefixado em cada chunk ("[Seção 11 — REALIZAÇÃO DA PROVA]")
+#   IDX_TABELA_CABECALHO  1 = cada chunk de tabela do Ibirubá ganha uma linha de cabeçalho (anexo, título do anexo e
+#                         rótulo da tabela, todos lidos do PDF)
+#   IDX_IDS               estavel | legado             ids = hash(nome do arquivo + posição) × hash do Haystack
+#                         (conteúdo + metadados, inclusive o CAMINHO do arquivo → muda entre Windows e Linux)
+#   E5_PREFIXOS           1 = "passage: " no texto embedado de cada chunk (o texto gravado não muda); a consulta
+#                         usa "query: " com a mesma variável em nucleo.py. Precisa dos dois lados.
+IDX_CHUNKER = os.getenv("IDX_CHUNKER", "item_titulo").strip().lower()
+IDX_TABELA_CABECALHO = _env_flag("IDX_TABELA_CABECALHO", "1")
+IDX_IDS = os.getenv("IDX_IDS", "estavel").strip().lower()
+E5_PREFIXOS = _env_flag("E5_PREFIXOS")
+_CHUNKERS = ("atual", "item", "item_titulo")
+_CORPO_TETO_PALAVRAS, _CORPO_SOBREPOSICAO = 200, 20       # chunker por item: teto e sobreposição (só ao subdividir)
 
 
 class IndexacaoIncompleta(RuntimeError):
@@ -54,7 +80,7 @@ _SPLITTER = DocumentSplitter(split_by=_SPLIT_BY, split_length=_SPLIT_LENGTH, spl
 #   • a fração de tokens de 4+ caracteres que aparecem em >= 3 chunks do corpus é < _FREQ_MIN.
 _CURTOS_MAX = 0.40
 _FREQ_MIN = 0.30
-_MIN_TOKENS_PORTAO = 20      # chunks menores (ex.: só um título) são pequenos demais para avaliar
+_MIN_TOKENS_PORTAO = 30      # chunks menores (título, item curto do chunker por item) são pequenos demais para avaliar
 _TIPOS_COM_PORTAO = ("corpo", "legenda", "anexo_geral")
 
 # ── Campus ───────────────────────────────────────────────────────────────────
@@ -163,8 +189,14 @@ def _eh_caixa_alta(linha: str) -> bool:
     return 5 <= len(s) <= 120 and any(c.isalpha() for c in s) and not any(c.islower() for c in s)
 
 
-def _frac_curtos(texto: str, contar_digitos: bool) -> float:
-    toks = _TOKEN.findall(texto)
+_TOKEN_COMPOSTO = re.compile(r"\w+(?:/\w+)*", re.UNICODE)     # "da/do", "candidata/candidato" = 1 token
+
+
+def _frac_curtos(texto: str, contar_digitos: bool, compostos: bool = False) -> float:
+    """Fração de tokens de 1-2 caracteres. `compostos`: formas com barra da escrita inclusiva do edital
+    ("a/o", "da/do") contam como UM token; sem isso, itens curtos como "11.15. É … da/do candidata/candidato…"
+    parecem texto embaralhado (44% de tokens curtos). Só o portão de legibilidade usa compostos=True."""
+    toks = (_TOKEN_COMPOSTO if compostos else _TOKEN).findall(texto)
     if not toks:
         return 1.0
     curtos = sum(1 for t in toks if len(t) <= 2 and (contar_digitos or not t.isdigit()))
@@ -177,6 +209,22 @@ def _linha_ilegivel(linha: str) -> bool:
     if toks and all(len(t) <= 2 and not t.isdigit() for t in toks):
         return True                      # "e", "a", "s g": letras soltas de texto rotacionado
     return len(toks) >= 6 and _frac_curtos(linha, True) >= 0.7
+
+
+_CONECTIVOS_TITULO = frozenset({"E", "DE", "DA", "DO", "DAS", "DOS", "PARA", "COM", "EM", "OU", "-", "–"})
+
+
+def _titulo_anexo(linhas: list, j: int) -> str:
+    """Título do anexo = linha em caixa alta depois de "ANEXO X" (linhas[j]). Quando a linha termina em conectivo
+    ("…CURSOS INTEGRADOS, CONCOMITANTES E"), o título continua na linha seguinte em caixa alta."""
+    if j + 1 >= len(linhas) or not _eh_caixa_alta(linhas[j + 1]):
+        return ""
+    tit, k = linhas[j + 1].strip(), j + 2
+    while k < len(linhas) and _eh_caixa_alta(linhas[k]) and not _RE_CAMPUS_CAB_ANEXO.match(linhas[k].strip()) \
+            and (tit.split()[-1] in _CONECTIVOS_TITULO or tit.endswith((",", "-", "–"))):
+        tit += " " + linhas[k].strip()
+        k += 1
+    return tit
 
 
 def _intervalos(paginas) -> str:
@@ -223,7 +271,7 @@ def _classificar_paginas(textos: list) -> list:
             ma = _RE_ANEXO.match(l)
             if ma:
                 anexo = f"ANEXO {ma.group(1)}"
-                anexo_tit = L[j + 1] if j + 1 < len(L) and _eh_caixa_alta(L[j + 1]) else ""
+                anexo_tit = _titulo_anexo(L, j)
                 campus_atual = None
                 continue
             mc = _RE_CAMPUS_CAB_ANEXO.match(l)
@@ -315,8 +363,7 @@ def _detectar_titulos(linhas: list, offs: list, corpo: bool) -> list:
         s = l.strip()
         ma = _RE_ANEXO.match(s)
         if ma:
-            tit = linhas[i + 1].strip() if i + 1 < len(linhas) and _eh_caixa_alta(linhas[i + 1]) else ""
-            res.append((offs[i], f"ANEXO {ma.group(1)}", tit))
+            res.append((offs[i], f"ANEXO {ma.group(1)}", _titulo_anexo(linhas, i)))
         elif corpo:
             m1 = _RE_TITULO_N1.match(s)
             if m1 and not any(c.islower() for c in s) and int(m1.group(1)) <= 25:
@@ -329,12 +376,19 @@ def _detectar_titulos(linhas: list, offs: list, corpo: bool) -> list:
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _linhas_tabela_pagina(page) -> list:
-    """Linhas "Curso: … | Turnos: … | Duração (semestres): … | Total de Vagas: …" de uma página.
+    """Linhas "Curso: … | Turnos: … | Duração (semestres): … | Total de Vagas: …" de uma página."""
+    return [l for l, _ in _linhas_tabela_pagina_cab(page)]
+
+
+def _linhas_tabela_pagina_cab(page) -> list:
+    """[(linha, rótulo da tabela)] de uma página. O rótulo é a 1ª célula do cabeçalho da tabela no PDF
+    ("Cursos Técnicos Integrados ao Ensino Médio", "Cursos Superiores"…).
     Posição fixa das 4 primeiras colunas; colunas de cotas (C1-C10) descartadas."""
     linhas: list = []
     for tabela in page.extract_tables() or []:
         if not tabela:
             continue
+        rotulo = " ".join(str(tabela[0][0]).replace("\n", " ").split()) if tabela[0] and tabela[0][0] else ""
         ultimo_col0 = ""  # resetado a cada tabela
         for linha in tabela[1:]:  # tabela[0] é sempre o cabeçalho
             if not linha:
@@ -363,7 +417,7 @@ def _linhas_tabela_pagina(page) -> list:
                 elif idx == 0:
                     partes.append(f"{label}: {col0}")
             if partes:
-                linhas.append(" | ".join(partes))
+                linhas.append((" | ".join(partes), rotulo))
     return linhas
 
 
@@ -382,6 +436,28 @@ def _validar_cursos(linhas: list, nome_pdf: str = "") -> tuple:
         else:
             ok.append(linha)
     return ok, n
+
+
+_FORMACAO_POR_PREFIXO = (("Bacharelado em", "bacharelado"), ("Licenciatura em", "licenciatura"),
+                         ("Tecnologia em", "tecnologia"))
+
+
+def _cabecalho_tabela(anexo: str, anexo_titulo: str, rotulo: str, linha: str) -> str:
+    """Linha descritiva prefixada em cada chunk de tabela (IDX_TABELA_CABECALHO). Tudo vem do PDF: número e
+    título do anexo, rótulo da tabela (1ª célula do cabeçalho) e a formação, lida do prefixo do próprio curso.
+    Ex.: "Campus Ibirubá — Anexo V, Quadros de vagas - cursos de graduação: Cursos Superiores (bacharelado)."
+    Não usa "Técnico em"/"Bacharelado em"/… (nucleo._tipo_tabela_chunk classifica o chunk por esses prefixos)."""
+    m = _RE_CURSO_LINHA.search(linha)
+    curso = m.group(1).strip() if m else ""
+    formacao = next((f for pref, f in _FORMACAO_POR_PREFIXO if curso.startswith(pref)), "")
+    cab = f"Campus Ibirubá — Anexo {anexo.split()[-1]}" if anexo else "Campus Ibirubá"
+    if anexo_titulo:
+        cab += f", {anexo_titulo.lower().capitalize()}"
+    if rotulo:
+        cab += f": {rotulo}"
+    if formacao:
+        cab += f" ({formacao})"
+    return cab + "."
 
 
 def _texto_legenda(page) -> str:
@@ -526,6 +602,139 @@ def _chunkar(texto: str, meta_base: dict, secao_entrada: tuple, titulos: list, s
     return docs
 
 
+# ── Chunker do corpo por item numerado (IDX_CHUNKER = item | item_titulo) ────────────────────────────
+# Item = linha que começa com "N.N." (nível 2) cujo N é o número da seção de nível 1 em curso. Subitens "N.N.N"
+# ficam na unidade do item pai e só viram corte quando o item passa do teto de palavras. Nunca cruza seção.
+_RE_ITEM_NUM = re.compile(r"^(\d{1,2})((?:\.\d{1,3})+)\.?\s+\S")
+
+
+def _n_palavras(texto: str) -> int:
+    return len(texto.split())
+
+
+def _janelas_palavras(texto: str, teto: int, sobreposicao: int) -> list:
+    pal = texto.split()
+    if len(pal) <= teto:
+        return [texto]
+    janelas = []
+    for ini in range(0, len(pal), teto - sobreposicao):
+        janelas.append(" ".join(pal[ini:ini + teto]))
+        if ini + teto >= len(pal):
+            break
+    return janelas
+
+
+def _unidades_da_secao(linhas: list, num_secao: int) -> list:
+    """Unidades = itens "N.N." de UMA seção de nível 1. `linhas` = [{texto, pagina, ibi}]. Texto anterior ao
+    primeiro item forma a unidade de introdução (intro=True); `filhos` = índices das linhas "N.N.N" da unidade."""
+    unidades, atual = [], None
+    for ln in linhas:
+        m = _RE_ITEM_NUM.match(ln["texto"])
+        mesma_secao = bool(m) and int(m.group(1)) == num_secao
+        profundidade = m.group(2).count(".") + 1 if mesma_secao else 0
+        if mesma_secao and (profundidade == 2 or atual is None or atual["intro"]):
+            atual = {"linhas": [ln], "filhos": [], "intro": False}
+            unidades.append(atual)
+        elif mesma_secao:
+            atual["filhos"].append(len(atual["linhas"]))
+            atual["linhas"].append(ln)
+        else:
+            if atual is None:
+                atual = {"linhas": [], "filhos": [], "intro": True}
+                unidades.append(atual)
+            atual["linhas"].append(ln)
+    if len(unidades) > 1 and unidades[0]["intro"] and sum(_n_palavras(l["texto"]) for l in unidades[0]["linhas"]) < 30:
+        prox = unidades[1]                       # introdução curta (ex.: só o título): cola no 1º item
+        prox["filhos"] = [len(unidades[0]["linhas"]) + f for f in prox["filhos"]]
+        prox["linhas"] = unidades[0]["linhas"] + prox["linhas"]
+        unidades.pop(0)
+    return unidades
+
+
+def _dividir_unidade(u: dict, teto: int, sobreposicao: int) -> list:
+    """[(texto, linhas cobertas)] de uma unidade: inteira se couber no teto; senão corta nos subitens "N.N.N"
+    (repetindo a 1ª linha do item, se curta) e, se um subitem sozinho passar do teto, em janelas de palavras."""
+    linhas = u["linhas"]
+    if sum(_n_palavras(l["texto"]) for l in linhas) <= teto:
+        return [("\n".join(l["texto"] for l in linhas), linhas)]
+    cortes = [0] + u["filhos"] + [len(linhas)]
+    segs = [linhas[a:b] for a, b in zip(cortes, cortes[1:]) if b > a]
+    cabeca = linhas[0]["texto"] if _n_palavras(linhas[0]["texto"]) <= 30 else ""
+    partes, atual, w = [], [], 0
+
+    def fechar():
+        nonlocal atual, w
+        if atual:
+            txt = "\n".join(l["texto"] for l in atual)
+            if partes and cabeca and atual[0]["texto"] != cabeca:
+                txt = cabeca + "\n" + txt
+            partes.append((txt, atual))
+        atual, w = [], 0
+
+    for seg in segs:
+        ws = sum(_n_palavras(l["texto"]) for l in seg)
+        if ws > teto:
+            fechar()
+            for jan in _janelas_palavras("\n".join(l["texto"] for l in seg), teto, sobreposicao):
+                partes.append((jan, seg))
+            continue
+        if atual and w + ws > teto:
+            fechar()
+        atual, w = atual + seg, w + ws
+    fechar()
+    return partes
+
+
+def _chunkar_corpo_por_item(linhas: list, meta_fixa: dict, com_titulo: bool) -> list:
+    """Chunks tipo="corpo" por item numerado. `linhas` = linhas do corpo em ordem de documento:
+    [{texto, pagina, ibi, titulo: (rótulo, título) | None}] (titulo != None marca a linha de título de nível 1)."""
+    secoes, atual = [], {"rot": "0", "tit": "PREÂMBULO DO EDITAL", "linhas": [], "titulo_ln": None}
+    for ln in linhas:
+        if ln["titulo"]:
+            secoes.append(atual)
+            atual = {"rot": ln["titulo"][0], "tit": ln["titulo"][1], "linhas": [], "titulo_ln": ln}
+            if not com_titulo:
+                atual["linhas"].append(ln)       # sem prefixo, o título é parte do texto do 1º item
+        else:
+            atual["linhas"].append(ln)
+    secoes.append(atual)
+
+    docs = []
+    for sec in secoes:
+        ls = sec["linhas"] or ([sec["titulo_ln"]] if sec["titulo_ln"] else [])
+        if not ls:
+            continue
+        digitos = re.match(r"\d+", sec["rot"])
+        num = int(digitos.group()) if digitos else 0
+        prefixo = ""
+        if com_titulo:
+            prefixo = (f"[Seção {num} — {sec['tit']}]\n" if num else f"[{sec['tit']}]\n")
+        k = 0
+        for u in _unidades_da_secao(ls, num):
+            for texto, cobertas in _dividir_unidade(u, _CORPO_TETO_PALAVRAS, _CORPO_SOBREPOSICAO):
+                pgs = [l["pagina"] for l in cobertas]
+                meta = dict(meta_fixa, tipo="corpo", page_number=min(pgs), pagina_ini=min(pgs), pagina_fim=max(pgs),
+                            secao=sec["rot"], secao_titulo=sec["tit"], secoes=sec["rot"],
+                            escopo_campus="ibiruba" if any(l["ibi"] for l in cobertas) else "todos",
+                            split_id=k, split_idx_start=0)
+                docs.append(Document(content=prefixo + texto, meta=meta))
+                k += 1
+    return docs
+
+
+def _atribuir_ids_estaveis(docs: list, nome: str) -> list:
+    """Cópias dos chunks com id = sha256(nome do arquivo + tipo + página + posição entre os chunks do mesmo tipo
+    e página). Não usa caminho, conteúdo nem metadados do Haystack: o mesmo PDF gera os mesmos ids em qualquer máquina."""
+    posicao = collections.Counter()
+    novos = []
+    for d in docs:
+        chave = (d.meta["tipo"], d.meta["pagina_ini"])
+        novos.append(dataclasses.replace(
+            d, id=hashlib.sha256(f"{nome}|{chave[0]}|p{chave[1]}|{posicao[chave]}".encode("utf-8")).hexdigest()))
+        posicao[chave] += 1
+    return novos
+
+
 def _processar_pdf(caminho_pdf: str) -> dict:
     """Extrai e chunka um PDF. Nada é gravado em disco aqui.
 
@@ -578,7 +787,9 @@ def _processar_pdf(caminho_pdf: str) -> dict:
         estado_lista = "todos"
         n_linhas_tabela = 0
         n_itens_descartados = 0
-        meta_fixa = {"source": nome, "file_path": caminho_pdf}
+        # file_path: com ids estáveis guarda só o nome do arquivo (o caminho muda entre máquinas e SO)
+        meta_fixa = {"source": nome, "file_path": caminho_pdf if IDX_IDS == "legado" else nome}
+        corpo_linhas: list = []
 
         def registrar(rot, tit, tipo="corpo", tem_ibiruba=True):
             if rot not in secoes:
@@ -606,13 +817,16 @@ def _processar_pdf(caminho_pdf: str) -> dict:
                 secao_atual = secao
                 base = dict(meta_fixa, page_number=pagina, pagina_ini=pagina, pagina_fim=pagina)
                 try:
-                    brutas = _linhas_tabela_pagina(page)
+                    brutas = _linhas_tabela_pagina_cab(page)
                 except Exception as e:
                     print(f"⚠️  Aviso: erro ao processar tabelas da página {pagina} de {nome}: {e}")
                     brutas = []
-                linhas_ok, _ = _validar_cursos(brutas, nome)
-                for linha in linhas_ok:
-                    docs.append(Document(content=linha, meta=dict(
+                linhas_ok = [(l, rot) for l, rot in brutas if _validar_cursos([l], nome)[0]]
+                for linha, rotulo in linhas_ok:
+                    conteudo = linha
+                    if IDX_TABELA_CABECALHO:
+                        conteudo = _cabecalho_tabela(d["anexo"], d["anexo_titulo"], rotulo, linha) + "\n" + linha
+                    docs.append(Document(content=conteudo, meta=dict(
                         base, tipo="tabela", secao=secao[0], secao_titulo=secao[1], secoes=secao[0],
                         escopo_campus="ibiruba", split_id=0, split_idx_start=0)))
                 n_linhas_tabela += len(linhas_ok)
@@ -643,9 +857,18 @@ def _processar_pdf(caminho_pdf: str) -> dict:
                 secao_atual = (d["anexo"], d["anexo_titulo"])   # página de continuação do anexo
             base = dict(meta_fixa, page_number=pagina, pagina_ini=pagina, pagina_fim=pagina,
                         tipo="corpo" if cat == "corpo" else "anexo_geral")
-            docs += _chunkar(texto, base, secao_atual, titulos_reg, spans, "todos")
+            if cat == "corpo" and IDX_CHUNKER != "atual":
+                por_offset = {off: (rot, tit) for off, rot, tit in titulos_reg}
+                for lin, off, fl in zip(linhas, offs, flags):
+                    corpo_linhas.append({"texto": lin.strip(), "pagina": pagina, "ibi": bool(fl),
+                                         "titulo": por_offset.get(off)})
+            else:
+                docs += _chunkar(texto, base, secao_atual, titulos_reg, spans, "todos")
             if titulos_reg:
                 secao_atual = (titulos_reg[-1][1], titulos_reg[-1][2])
+
+        if corpo_linhas:
+            docs += _chunkar_corpo_por_item(corpo_linhas, meta_fixa, com_titulo=(IDX_CHUNKER == "item_titulo"))
 
         # ── Chunks de cronograma ─────────────────────────────────────────────
         if crono["linhas"]:
@@ -661,6 +884,8 @@ def _processar_pdf(caminho_pdf: str) -> dict:
     # Ordem do documento (página; dentro da página, o cronograma depois do corpo). A ordem de gravação
     # é a ordem em que nucleo.py injeta os chunks tipo="cronograma" no contexto do híbrido (modo "todos").
     docs.sort(key=lambda d: (d.meta["pagina_ini"], d.meta["tipo"] == "cronograma"))
+    if IDX_IDS == "estavel":
+        docs = _atribuir_ids_estaveis(docs, nome)
 
     return {"nome": nome, "docs": docs, "secoes": secoes, "info": info, "n_linhas_tabela": n_linhas_tabela,
             "avisos": avisos, "n_itens_descartados": n_itens_descartados, "cronograma": crono}
@@ -684,7 +909,7 @@ def _portao_legibilidade(docs: list) -> tuple:
         if len(_TOKEN.findall(d.content)) < _MIN_TOKENS_PORTAO:
             aceitos.append(d)
             continue
-        curtos = _frac_curtos(d.content, contar_digitos=False)
+        curtos = _frac_curtos(d.content, contar_digitos=False, compostos=True)
         toks4 = [t.lower() for t in _TOKEN.findall(d.content) if len(t) >= 4]
         freq = (sum(1 for t in toks4 if df[t] >= 3) / len(toks4)) if toks4 else 0.0
         motivo = None
@@ -696,7 +921,7 @@ def _portao_legibilidade(docs: list) -> tuple:
             rejeitados.append((d, motivo))
         else:
             aceitos.append(d)
-            if _frac_curtos(d.content, contar_digitos=True) >= _CURTOS_MAX:
+            if _frac_curtos(d.content, contar_digitos=True, compostos=True) >= _CURTOS_MAX:
                 so_literal.append(d)       # a regra literal (contando dígitos) também o rejeitaria
     return aceitos, rejeitados, so_literal
 
@@ -768,6 +993,12 @@ def indexar_documentos(
             "Coloque os PDFs na pasta e rode novamente."
         )
 
+    if IDX_CHUNKER not in _CHUNKERS:
+        raise ValueError(f"IDX_CHUNKER inválido: {IDX_CHUNKER!r} (use {', '.join(_CHUNKERS)})")
+    if IDX_IDS not in ("estavel", "legado"):
+        raise ValueError(f"IDX_IDS inválido: {IDX_IDS!r} (use estavel ou legado)")
+    print(f"⚙️  Variantes: chunker={IDX_CHUNKER} · cabeçalho de tabela={'sim' if IDX_TABELA_CABECALHO else 'não'} · "
+          f"ids={IDX_IDS} · prefixos E5={'sim' if E5_PREFIXOS else 'não'}")
     print(f"📄 {len(arquivos)} PDF(s) encontrado(s):")
     for a in arquivos:
         print(f"   • {a.name}")
@@ -777,6 +1008,8 @@ def indexar_documentos(
     for arq in arquivos:
         resultados.append(_processar_pdf(str(arq)))
     todos = [d for r in resultados for d in r["docs"]]
+    if len({d.id for d in todos}) != len(todos):
+        raise RuntimeError("ids de chunk duplicados (o Chroma sobrescreveria chunks)")
     n_linhas_tabela = sum(r["n_linhas_tabela"] for r in resultados)
     for r in resultados:
         for av in r["avisos"]:
@@ -812,7 +1045,8 @@ def indexar_documentos(
     chroma_path.mkdir(parents=True, exist_ok=True)
 
     document_store = ChromaDocumentStore(collection_name="ifturing", persist_path=pasta_chroma)
-    embedder = SentenceTransformersDocumentEmbedder(model="intfloat/multilingual-e5-base")
+    embedder = SentenceTransformersDocumentEmbedder(model="intfloat/multilingual-e5-base",
+                                                    prefix="passage: " if E5_PREFIXOS else "")
     writer = DocumentWriter(document_store=document_store, policy=DuplicatePolicy.OVERWRITE)
     embedder.warm_up()
 

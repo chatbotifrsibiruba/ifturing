@@ -667,3 +667,271 @@ python -c "import indexar; indexar.indexar_documentos('./documentos', './chroma_
 python avaliar_retrieval.py --run base=./chroma_exp_prod --legado base --run fase2=./chroma_exp_fase2
 python avaliar_retrieval.py --run base=./chroma_exp_prod --legado base --run fase2=./chroma_exp_fase2 --crono-por-meta --saida retrieval_resultado_meta
 ```
+
+
+---
+
+# Fase 2C — cronograma por metadado e diagnóstico de ranking
+
+Escopo (commit `07b9f50`): `nucleo.py` passa a injetar o cronograma pelo metadado `tipo="cronograma"` e o critério antigo ("cronograma" no texto ou ≥ 3 datas) é removido; `avaliar_retrieval.py` ganha ranking completo, posição do chunk com a evidência e diagnóstico de tabelas. Nada de produção foi reindexado.
+
+## 2C.1 O que mudou
+
+| Arquivo | Mudança |
+|---|---|
+| `nucleo.py` | `cronograma_docs = selecionar_cronograma(...)` (meta `tipo="cronograma"`); `CRONOGRAMA_MODO` = `todos` (padrão, cronograma inteiro) ou `topk` (os `CRONOGRAMA_TOP_K`=3 chunks mais similares, via `cronograma_mais_similares`, que usa o mesmo retriever filtrado por tipo); `responder()` passa o embedding da pergunta (`include_outputs_from`); `_PADRAO_DATA_RECENTE` removido |
+| `avaliar_retrieval.py` | modos `semantico`, `hib-top3`, `hib-todos`; rank do chunk com a evidência no ranking completo; auditoria do critério antigo; diagnóstico de `_buscar_tabelas_por_keyword`; a avaliação de referência do índice novo usa a EVIDENCIA atual (sem `--legado`) |
+| `avaliar.py`, `teste_timing.py`, `indexar.py`, `PIPELINE.md` | imports e comentários ajustados à seleção por metadado |
+
+## 2C.2 Duas variantes de cronograma (índice da fase 2, EVIDENCIA atual)
+
+| grupo | modo | n | hit@3 | hit@5 | hit@10 | MRR | hit@ctx | chars_ctx |
+|---|---|---|---|---|---|---|---|---|
+| legado | semantico | 30 | 60% | 63% | 70% | 0.489 | 70% | 6.198 |
+| legado | hib-top3 | 30 | 70% | 83% | 93% | 0.530 | 93% | 4.205 |
+| legado | hib-todos | 30 | 57% | 77% | 90% | 0.465 | 97% | 5.075 |
+| novas | semantico | 27 | 63% | 78% | 81% | 0.499 | 81% | 9.039 |
+| novas | hib-top3 | 27 | 41% | 63% | 81% | 0.398 | 81% | 8.359 |
+| novas | hib-todos | 27 | 37% | 52% | 81% | 0.364 | 85% | 9.063 |
+
+Nas 57 perguntas: `hit@10` top3 = 50, todos = 49; `hit@ctx` top3 = 50, todos = 52. **Escolhido `todos`** (padrão do `nucleo.py`): o `hit@ctx` é o que o LLM recebe; `todos` cobre C03 (o chunk certo não está entre os 3 mais similares) e E04 (4 datas de chunks diferentes). Custo: o cronograma inteiro tem 5.937 caracteres (≈ 1.696 tokens); contexto híbrido máximo 13.656 caracteres (≈ 3.900 tokens).
+
+## 2C.3 Critério antigo removido
+
+No índice da fase 2 ele selecionava 14 chunks: os 6 do cronograma e 8 de corpo que apenas citam o cronograma (seções 1, 1, 2, 10, 10, 11, 13 e 16). Nas perguntas que disparam o cronograma o fluxo antigo cobre 15/16 (igual a `hib-todos`) e, nas 57, 52 contra 52; nenhuma pergunta depende só dos 8 chunks. Contexto médio do fluxo antigo nessas perguntas: 20,8 chunks, e só 2 de 16 acertavam em k=10.
+
+## 2C.4 Diagnóstico B08 / E02 e achados que viraram a Fase 3
+
+- **E02** ("Liste todos os cursos"): 0 das 9 tabelas chegavam ao contexto. Critério 1 (tipo de curso) vazio e critério 2 (nome) só recebia "liste"/"todos".
+- **B08**: as 4 tabelas de graduação chegavam pelo top-10 semântico; a de Ciência da Computação caía na posição 11 porque o cronograma entrava na frente (falso positivo do gatilho em "período noturno").
+- **Gatilho do cronograma**: 5 das 16 perguntas que o disparavam não são de data (B08, D02, F10a, F10c, F15a): `data` casava dentro de "candi**data**", "inscrição" em "taxa de inscrição". → Fase 3, item 1.
+- **Ids**: os ids de chunk do servidor diferiam dos locais porque o hash do Haystack inclui o `file_path` (`documentos\...` no Windows, `documentos/...` no Linux). → Fase 3, item 4.
+- **Reprodutibilidade**: o top-10 aproximado do Chroma (HNSW) pode trocar o chunk da 10ª posição entre execuções (B05, B08); só o `chars_ctx` oscila, não os acertos nem o MRR.
+
+---
+
+# Fase 3 — chunking e recuperação no índice completo
+
+Escopo: `indexar.py`, `nucleo.py`, `avaliar_retrieval.py`, `avaliar.py`/`teste_timing.py` (prefixo de consulta), `PIPELINE.md`. Validação **só em coleções temporárias** `./chroma_exp_f3_*`; a produção não foi reindexada (não há `./chroma_data` neste checkout). Modelo de embedding e base vetorial inalterados. Cada item tem uma variante controlada por variável de ambiente; os grupos legado (30) e novas (27) ficam separados em todas as tabelas. Relatório completo: `retrieval_resultado_fase3.md` (ignorado pelo git, como os demais `retrieval_resultado_*`).
+
+## F3.0 Resumo
+
+| Item | Resultado |
+|---|---|
+| 1 — gatilho do cronograma | **Concluído.** Palavra inteira + termos ambíguos só com evento do processo. 16 → 11 perguntas disparam; deixam de disparar B08, D02, F10a, F10c, F15a (nenhuma passa a disparar). Híbrido legado hit@10 90% → 93%, MRR 0,465 → 0,497 |
+| 2 — cabeçalho nas tabelas | **Concluído.** Semântico legado hit@10 70% → 87%. B01, B09, B12, B03, A01 entram no top-10 sem injeção (ex.: B01 de 151 para 5). **Regressão:** B02 (17 → 63) |
+| 2 — E02 | **Resolvido** com o critério "listar todos os cursos": custo de 9 tabelas = 999 caracteres (2.152 com cabeçalho) |
+| 3 — chunker por item | **Concluído.** Chunks de corpo com 2+ seções: 17 → 0. Semântico novas hit@10 81% → 89%, MRR 0,50 → 0,75; **melhor variante: item + título** |
+| 4 — ids estáveis | **Concluído e provado** (5 grafias de caminho, 2 indexações seguidas) |
+| 5 — prefixos E5 | **Medido.** Ganho no semântico (+4 pp hit@10 nos dois grupos); híbrido misto. **Desligado por padrão** |
+| 6 — metas | **Todas atingidas** por `final` e `final+e5` (tabela em F3.7) |
+| 7 — prompt | **Reescrito** (diff em F3.8); sem LLM aqui, não medido em resposta |
+| 8 — aceite F11a | **Passou** com os chunkers por item (8h30min e 14h no chunk 11.3, posição 1) e falha com o chunker atual |
+
+## F3.1 Variantes e variáveis
+
+| Variável | Onde | Valores | Padrão (após a Fase 3) |
+|---|---|---|---|
+| `IDX_CHUNKER` | `indexar.py` | `atual` · `item` · `item_titulo` | `item_titulo` |
+| `IDX_TABELA_CABECALHO` | `indexar.py` | `0` · `1` | `1` |
+| `IDX_IDS` | `indexar.py` | `estavel` · `legado` | `estavel` |
+| `E5_PREFIXOS` | `indexar.py` e `nucleo.py` (têm que coincidir) | `0` · `1` | `0` |
+| `CRONOGRAMA_GATILHO` | `nucleo.py` | `palavra` · `substring` | `palavra` |
+| `TABELAS_LISTAR_TODAS` | `nucleo.py` | `0` · `1` | `1` |
+| `CRONOGRAMA_MODO` | `nucleo.py` | `todos` · `topk` | `todos` |
+
+No avaliador, cada `--run` aceita `@gatilho=palavra|substring,listar=0|1` para comparar as variantes de consulta sobre o mesmo índice. Coleções: `2C` = índice da fase 2 com o comportamento da 2C; `+gatilho`, `+listar` = mesmo índice com cada mudança de consulta; `+cab` = só o cabeçalho de tabela; `+item`, `+item+tit` = só o chunker; `final` = item + título + cabeçalho + gatilho + listar; `final+e5` = `final` com prefixos.
+
+## F3.2 Item 1 — gatilho do cronograma
+
+`dispara_cronograma()`: casamento por palavra inteira, sem acento. Termos fortes sozinhos: `cronograma`, `calendário`, `data(s)`, `prazo(s)`. Termos ambíguos (`quando`, `período(s)`, `etapa(s)`) só junto de um evento do processo (inscrição, prova, resultado, classificação, matrícula, recurso, chamada, sorteio, divulgação, publicação, gabarito, isenção, convocação, homologação, "processo seletivo"). "Inscrição" sozinha deixou de ser gatilho.
+
+16 antes: B08, C01–C07, D02, E04, F10a, F10c, F12a, F13a, F15a, F16a. 11 depois: C01–C07, E04, F12a, F13a, F16a. Deixam de disparar: **B08, D02, F10a, F10c, F15a**. Efeito (mesmo índice, `2C` → `+gatilho`): híbrido legado hit@5 77% → 83%, hit@10 90% → 93%, MRR 0,465 → 0,497, `chars_ctx` 5.075 → 4.714; híbrido novas hit@3 37% → 44%, hit@5 52% → 59%, MRR 0,364 → 0,403, `chars_ctx` 9.063 → 8.441. `hit@ctx` não muda.
+
+## F3.3 Item 2 — cabeçalho descritivo nas tabelas, e E02
+
+Cada chunk de tabela ganha uma linha lida do PDF: número e título do anexo (agora completo: "…CONCOMITANTES E CONCOMITANTES/SUBSEQUENTES"), o rótulo da tabela (1ª célula do cabeçalho: "Cursos Técnicos Integrados ao Ensino Médio", "Cursos Superiores"…) e a formação, lida do prefixo do próprio curso. Exemplo:
+
+```
+Campus Ibirubá — Anexo V, Quadros de vagas - cursos de graduação: Cursos Superiores (bacharelado).
+Curso: Bacharelado em Agronomia | Turnos: Manhã e Tarde | Duração (semestres): 10 semestres* | Total de Vagas: 30
+```
+
+O cabeçalho evita "Técnico em / Bacharelado em / Licenciatura em", pois `nucleo._tipo_tabela_chunk` classifica o chunk por esses prefixos. Rank semântico no ranking completo (sem injeção); célula = o maior dos melhores ranks de cada evidência, isto é, o menor top-k que cobre a pergunta; ✓ = cobre no top-10:
+
+| id | pergunta | 2C (antes) | +cab | final | final+e5 |
+|---|---|---|---|---|---|
+| A01 | cursos técnicos disponíveis | 28 | **7** ✓ | **7** ✓ | **5** ✓ |
+| B01 | cursos superiores oferecidos | 151 | **5** ✓ | **5** ✓ | **4** ✓ |
+| B02 | bacharelados disponíveis | 17 | 63 | 75 | 30 |
+| B03 | alguma licenciatura | 19 | **2** ✓ | **2** ✓ | **1** ✓ |
+| B09 | cursos superiores do campus | 152 | **5** ✓ | **5** ✓ | **4** ✓ |
+| B12 | quantos cursos superiores | 140 | **4** ✓ | **4** ✓ | **4** ✓ |
+| B08 | superiores no período noturno | 5 ✓ | 3 ✓ | 3 ✓ | 3 ✓ |
+| E02 | liste todos os cursos | 133 | 14 | 13 | 13 |
+
+Cinco perguntas (A01, B01, B03, B09, B12) deixam de depender da injeção por palavra-chave. **B02 piora** com o cabeçalho (as 3 tabelas descem de 7–17 para 39–75; não investiguei a causa); no híbrido continua coberta pelo critério de tipo (`bacharelados` ∈ `_SINONIMOS_TIPO`).
+
+**E02** continua fora do top-10 (rank 13), então entra o critério 3 de `_buscar_tabelas_por_keyword`: se a pergunta tem `liste/lista/listar/todos/todas/quais` + `cursos`, não tem tipo de curso e os critérios 1 e 2 não acharam nada, injeta as tabelas ainda ausentes. Não dispara em "O campus oferece curso de Direito?" (D01). **Custo:** as 9 tabelas somam 999 caracteres (≈ 285 tokens) sem cabeçalho e 2.152 (≈ 615 tokens) com cabeçalho; o contexto de E02 passa de 2.167 para 3.173 caracteres no índice antigo (`+listar`) e fica em 2.354 caracteres (10 chunks) no índice final. E02: evidências 0/8 → 8/8 no contexto.
+
+## F3.4 Item 3 — chunker do corpo por item numerado
+
+Item = linha que começa com `N.N.` cujo `N` é o número da seção de nível 1 em curso (guarda contra números soltos no texto). Subitens `N.N.N` ficam na unidade do item pai; um item acima de 200 palavras é cortado primeiro nos subitens (repetindo a 1ª linha do item, se curta) e, se um subitem sozinho passar do teto, em janelas de 200 palavras com sobreposição de 20. Nunca cruza seção de nível 1. Com `item_titulo` cada chunk começa com `[Seção 11 — REALIZAÇÃO DA PROVA]`. Metadados preservados (`secao`, `secoes`, `pagina_ini`, `pagina_fim`, `tipo`, `escopo_campus`); `pagina_ini/fim` agora podem diferir quando o item cruza a página.
+
+| chunker | chunks de corpo | palavras (mediana / máx) | chunks com 2+ seções de nível 1 |
+|---|---|---|---|
+| atual (150/20 por página) | 66 | 165 / 170 | **17** (inclui `3b18b051`: seções 10 e 11; `9ccf77d8`: 17 e 18) |
+| item | 160 | 41 / 200 | 0 |
+| item + título | 160 | 47 / 211 | 0 |
+
+Os portões foram preservados, com dois ajustes que o chunker fino exigiu: (a) **legibilidade**: formas com barra da escrita inclusiva ("da/do", "candidata/candidato") contam como um token na fração de tokens curtos (itens curtos como 11.15 chegavam a 44% e eram rejeitados); (b) o **mínimo avaliado** pelo portão passou de 20 para 30 tokens (11.15 tem 25 tokens e 40% de palavras funcionais, o limite do portão; os demais chunks de corpo chegam a 38%). Resultado: 0 rejeitados nos três chunkers; portão de cobertura sem falhas.
+
+Resultado isolado (mesmo índice de tabelas, gatilho antigo): `+item` e `+item+tit` melhoram muito o grupo novas (semântico hit@10 81% → 89%, MRR 0,499 → 0,744/0,749; híbrido `hit@ctx` 85% → 93%) e **pioram o legado sozinhos** (semântico MRR 0,489 → 0,385; híbrido hit@10 90% → 83%/87%): muitos chunks curtos de corpo passam à frente das linhas de tabela. Isso é compensado pelo cabeçalho (F3.3). Entre `item` e `item+tit` o título ganha em hit@5 (novas semântico 81% → 89%), híbrido novas hit@10 (89% → 93%) e híbrido legado hit@10 (83% → 87%).
+
+## F3.5 Item 4 — ids estáveis
+
+`id = sha256(nome do arquivo | tipo | página | posição entre os chunks do mesmo tipo e página)`; `file_path` guarda só o nome do arquivo. Provado com a mesma PDF indexada com cinco grafias de caminho (relativo com `/`, relativo com `\`, absoluto com `\`, absoluto com `/`, cópia em outra pasta com espaço) e em duas indexações seguidas:
+
+| `IDX_IDS` | ids iguais entre as 5 grafias | 2ª indexação seguida | `file_path` com separador | ids únicos |
+|---|---|---|---|---|
+| `estavel` | **sim (173/173)** | sim | 0 de 173 | sim |
+| `legado` | **não (0/173 em comum)** | sim | 173 de 173 | sim |
+
+Impacto: o `nucleo.py` só usa o id para evitar repetir chunk (`ids_semanticos`) e o `teste_timing.py` para rotular a origem no debug; nenhum id é persistido (`db.py` não guarda chunks). Como o id é posicional, ele muda quando muda a quantidade de chunks daquela página (por exemplo, ao trocar de chunker), não quando o texto muda; não há dependência externa de ids antigos.
+
+## F3.6 Item 5 — prefixos do E5 (sobre o melhor chunker)
+
+`E5_PREFIXOS=1`: `passage: ` no texto embedado dos chunks (o texto gravado não muda) e `query: ` na consulta. Medido só em cima de `final`:
+
+| grupo | modo | | hit@3 | hit@5 | hit@10 | MRR | hit@ctx |
+|---|---|---|---|---|---|---|---|
+| legado | semantico | sem | 47% | 67% | 83% | 0.411 | 83% |
+| legado | semantico | com | 53% | 73% | 87% | 0.457 | 87% |
+| legado | híbrido | sem | 60% | 77% | 93% | 0.481 | 100% |
+| legado | híbrido | com | 57% | 80% | 93% | 0.495 | 100% |
+| novas | semantico | sem | 81% | 89% | 89% | 0.749 | 89% |
+| novas | semantico | com | 85% | 85% | 93% | 0.820 | 93% |
+| novas | híbrido | sem | 59% | 81% | 93% | 0.596 | 93% |
+| novas | híbrido | com | 70% | 81% | 89% | 0.678 | 96% |
+
+Ganho consistente no semântico (+4 pp em hit@10 nos dois grupos, MRR +0,05 a +0,07); no híbrido `hit@ctx` das novas sobe de 93% para 96% e o MRR sobe, mas o hit@10 das novas cai uma pergunta (93% → 89%). Contexto máximo sobe de 2.755 para 3.414 tokens estimados. São 57 perguntas: a diferença é de 1 a 2 perguntas por célula. **Recomendação:** ligar `E5_PREFIXOS=1` quando a produção for reindexada, **nos dois lados** (índice e consulta); por isso o padrão fica desligado (um índice sem prefixo consultado com `query: `, ou o contrário, degrada o ranking sem erro).
+
+`distance_function` não foi alterado: os embeddings do E5 saem com norma 1,000000 (267 chunks e 59 consultas) e, com vetores normalizados, l2 e cosseno ordenam igual. A comparação completa das duas ordenações dos 267 chunks diferiu em 1 consulta de 59, numa troca nas posições 193/194 por uma diferença de distância de 1,4e-9 (empate numérico).
+
+## F3.7 Item 6 — tabelas completas, falhas restantes e metas
+
+Híbrido = `hib-todos` (cronograma inteiro). Legado: `n = 30`; novas: `n = 27`.
+
+| coleção | grupo | modo | hit@3 | hit@5 | hit@10 | MRR | hit@ctx | chars_ctx |
+|---|---|---|---|---|---|---|---|---|
+| 2C | legado | semantico | 60% | 63% | 70% | 0.489 | 70% | 6.198 |
+| 2C | legado | híbrido | 57% | 77% | 90% | 0.465 | 97% | 5.075 |
+| +gatilho | legado | híbrido | 60% | 83% | 93% | 0.497 | 97% | 4.714 |
+| +listar | legado | híbrido | 60% | 83% | 97% | 0.500 | 100% | 4.748 |
+| +cab | legado | semantico | 57% | 70% | 87% | 0.515 | 87% | 6.533 |
+| +cab | legado | híbrido | 53% | 73% | 93% | 0.443 | 97% | 5.357 |
+| +item | legado | semantico | 53% | 53% | 70% | 0.385 | 70% | 4.543 |
+| +item | legado | híbrido | 53% | 70% | 83% | 0.455 | 97% | 3.838 |
+| +item+tit | legado | semantico | 50% | 57% | 67% | 0.383 | 67% | 4.642 |
+| +item+tit | legado | híbrido | 57% | 73% | 87% | 0.485 | 97% | 3.962 |
+| **final** | legado | semantico | 47% | 67% | **83%** | 0.411 | 83% | 4.798 |
+| **final** | legado | híbrido | 60% | 77% | 93% | 0.481 | **100%** | 3.812 |
+| final+e5 | legado | semantico | 53% | 73% | 87% | 0.457 | 87% | 5.228 |
+| final+e5 | legado | híbrido | 57% | 80% | 93% | 0.495 | 100% | 3.922 |
+| 2C | novas | semantico | 63% | 78% | 81% | 0.499 | 81% | 9.039 |
+| 2C | novas | híbrido | 37% | 52% | 81% | 0.364 | 85% | 9.063 |
+| +gatilho / +listar | novas | híbrido | 44% | 59% | 81% | 0.403 | 85% | 8.441 |
+| +cab | novas | semantico | 63% | 78% | 81% | 0.493 | 81% | 8.896 |
+| +cab | novas | híbrido | 41% | 56% | 81% | 0.370 | 85% | 9.135 |
+| +item | novas | semantico | 78% | 81% | 89% | 0.744 | 89% | 3.896 |
+| +item | novas | híbrido | 44% | 67% | 89% | 0.495 | 93% | 4.986 |
+| +item+tit | novas | semantico | 81% | 89% | 89% | 0.749 | 89% | 3.927 |
+| +item+tit | novas | híbrido | 48% | 70% | 93% | 0.500 | 93% | 5.178 |
+| **final** | novas | semantico | 81% | 89% | **89%** | 0.749 | 89% | 3.911 |
+| **final** | novas | híbrido | 59% | 81% | 93% | 0.596 | **93%** | 4.590 |
+| final+e5 | novas | semantico | 85% | 85% | 93% | 0.820 | 93% | 4.782 |
+| final+e5 | novas | híbrido | 70% | 81% | 89% | 0.678 | 96% | 5.178 |
+
+Metas (tokens estimados = caracteres / 3,5):
+
+| meta | alvo | `final` | `final+e5` |
+|---|---|---|---|
+| hit@ctx híbrido, legado | ≥ 97% | 100% ✓ | 100% ✓ |
+| hit@ctx híbrido, novas | ≥ 90% | 93% ✓ | 96% ✓ |
+| hit@10 semântico, legado | ≥ 80% | 83% ✓ | 87% ✓ |
+| hit@10 semântico, novas | ≥ 80% | 89% ✓ | 93% ✓ |
+| E02 resolvido (8/8 evidências no contexto) | sim | sim ✓ | sim ✓ |
+| contexto máximo | ≤ 4.000 tokens | 9.641 caracteres ≈ **2.755** ✓ | 11.948 caracteres ≈ **3.414** ✓ |
+
+O contexto máximo da 2C era 13.656 caracteres (≈ 3.902 tokens). Nenhuma meta depende de `E5_PREFIXOS`.
+
+**Falhas restantes e posição do chunk com a evidência** (rank no ranking semântico completo de 267 chunks; "+N" = N posições além do top-10):
+
+| coleção · modo | pergunta | chunk (seção) | rank | leitura |
+|---|---|---|---|---|
+| final · semântico | E02 | 3 tabelas técnicas (Anexos II/IV) | 11, 13, 14 | a 1–4 posições do top-10; a injeção "listar" cobre |
+| final · semântico | C01 | `a8c3d0f0` (cronograma 2) | 12 (+2) | a 2 posições; o híbrido injeta o cronograma |
+| final · semântico | F16a | `ac51fb01` (corpo 16) | 12 (+2) | a 2 posições do top-10 |
+| final · semântico | B02 | 3 tabelas de bacharelado (Anexo V) | 42, 62, 75 | regressão do cabeçalho; híbrido cobre por tipo |
+| final · semântico | C03, C05, E04 | chunks de cronograma | 28–208 | cronograma: o híbrido cobre |
+| final · semântico/híbrido | E03 | `8c9240e7` (7) e `065bf643` (7) | 44 e 122 | **perdido**: duas evidências em itens diferentes (7.1 e 7.2); a pergunta genérica não se parece com nenhum |
+| final · híbrido | F16a | `ac51fb01` (16) | 12 (+2) | não entra no contexto: fica a 2 posições; **ajuste de ranking** |
+| final · híbrido | C02, C06 | cronograma | 9 e 10 (dentro) | cobertos no contexto, mas na posição 14–15 (cronograma na frente empurra o chunk certo) |
+
+Com `final+e5`, E03 vira `8c9240e7` rank 15 (+5) e `065bf643` rank 68; o híbrido falha em k=10 em C01, C02, E04 e F16a só por posição no contexto (11 a 14; todos cobertos) e E03 não é coberto. Casos de foco da 2C, `k_min` (menor k que cobre a pergunta) de `2C` → `final`, semântico e híbrido: **F11a** — → 1; **F10c** — → 1; **F17b** — → 1; **F10a** 3/8 → 1/1; **F15a** 1/7 → 1/1 (em F10a e F15a o híbrido piorava por causa do cronograma injetado sem necessidade; agora a pergunta nem dispara). A posição do chunk no contexto não foi medida em resposta de LLM.
+
+## F3.8 Item 7 — prompt do LLM (`nucleo.montar_prompt`)
+
+Problema: a regra `COMPLETUDE OBRIGATÓRIA … Cada linha que começa com "Curso:" é um curso diferente` e o exemplo de registro só citavam "Curso:"; o `gemma3:4b` imitava o prefixo em respostas de data ("Curso: 30/09 a 19/10/2026 | …"). Antes: um texto fixo com 7 regras para toda pergunta. Depois: `montar_prompt()` monta as regras conforme a pergunta.
+
+```
+- COMPLETUDE OBRIGATÓRIA: ao listar cursos, percorra TODO o contexto … Cada linha que começa com "Curso:" é um curso diferente …   (sempre)
+- Cada linha do contexto é um registro independente … Nunca combine o nome de um curso com turno, duração ou vagas …           (sempre)
+- Se o contexto trouxer cursos de categorias diferentes (técnico integrado, …) …                                               (sempre)
+```
+passa a
+```
+COMPLETUDE OBRIGATÓRIA (a pergunta pede cursos) … "Isso vale só para listar cursos."   → só se a pergunta fala de cursos (curso, técnico, superiores, bacharelado, licenciatura, graduação, integrado…)
+Categorias de curso                                                                    → idem
+Registro: ex.: "Curso: … | Turnos: …"  (pergunta de cursos)  |  ex.: "Data: … | Evento: …"  (demais)
+Frase própria: NÃO copie linhas do contexto e NÃO use os rótulos ("Curso:", "Turnos:", … | "Data:", "Evento:") no texto da resposta; para uma lista, um item por linha só com os nomes e os dados pedidos.   (sempre)
+```
+
+Como cada mudança evita o problema: (1) o termo "Curso:" **não aparece mais** no prompt de perguntas que não são de cursos (0 ocorrências no prompt de "Quando são as inscrições…", antes 2), então o modelo não recebe o prefixo para imitar; (2) o exemplo do registro e a lista de rótulos proibidos mudam com o tipo de pergunta ("Data:"/"Evento:" nas demais, "Curso:"/"Turnos:"… nas de cursos); (3) a nova regra pede resposta em frase própria e proíbe copiar linhas e rótulos, atacando também respostas de curso que repetiam "Curso:"; (4) a regra de completude continua para listas de cursos, que é onde ela evita omissões, e agora diz que vale só para listar cursos. **Não medido em resposta de LLM** (sem Ollama aqui); o avaliador do `teste_modelos.py` ganhou a coluna "observação" para pegar linhas cruas.
+
+## F3.9 Item 8 — aceite F11a (só retrieval)
+
+Contexto híbrido de "Que horas começa a prova?" (e da pergunta do gabarito, "A que horas começa a prova?") precisa conter `8h30min (oito horas e trinta minutos)` e `14h (catorze horas)`, e não só o chunk do portão (11.4, 7h45min / 13h15min).
+
+| coleção | passou | onde |
+|---|---|---|
+| 2C, +gatilho, +listar, +cab (chunker atual) | **não** | só o chunk do portão, posição 1 |
+| +item, +item+tit, final, final+e5 | **sim** | chunk `04bd8dd4` (item 11.3) na posição 1; portão (11.4) na posição 2 |
+
+## F3.10 Riscos e pendências
+
+1. **Produção não foi reindexada.** Os padrões do `indexar.py` agora são `item_titulo` + cabeçalho de tabela + ids estáveis; `python indexar.py` aplica tudo (e preserva o índice atual se o portão de cobertura falhar). O código novo continua funcionando com índices antigos (gatilho e "listar" são de consulta).
+2. **E5:** ligar nos dois lados ao mesmo tempo (F3.6).
+3. **57 perguntas:** diferenças de 1 a 2 perguntas (E5, entre `item` e `item+tit`) não são estatisticamente firmes; as mudanças grandes (cabeçalho, chunker) são.
+4. **Cronograma na frente do contexto** empurra chunks corretos para as posições 11–15 (C01, C02, C06, E04, F16a). Está dentro do contexto, mas é candidato a reordenar (cronograma depois dos 3 primeiros semânticos).
+5. **E03** segue perdida ("O que preciso para me inscrever…"): a resposta está em dois itens distintos da seção 7.
+6. **B02** regrediu no semântico com o cabeçalho; a cobertura vem do critério de tipo.
+7. **Reprodutibilidade:** o Chroma (HNSW) pode trocar o chunk da 10ª posição entre execuções; só o `chars_ctx` oscila.
+8. `teste_modelos.py` (avaliador de respostas) foi reescrito à parte: datas por valor, contagem, observação de linhas cruas, `--todas`, `--reavaliar`, `--autoteste`.
+
+## F3.11 Reprodução
+
+```
+# índices temporários (nunca ./chroma_data); IDX_* e E5_PREFIXOS são lidos na importação do indexar
+IDX_CHUNKER=atual       IDX_TABELA_CABECALHO=1 python -c "import indexar; indexar.indexar_documentos('./documentos', './chroma_exp_f3_cab')"
+IDX_CHUNKER=item        IDX_TABELA_CABECALHO=0 python -c "import indexar; indexar.indexar_documentos('./documentos', './chroma_exp_f3_item')"
+IDX_CHUNKER=item_titulo IDX_TABELA_CABECALHO=0 python -c "import indexar; indexar.indexar_documentos('./documentos', './chroma_exp_f3_itemtit')"
+IDX_CHUNKER=item_titulo IDX_TABELA_CABECALHO=1 python -c "import indexar; indexar.indexar_documentos('./documentos', './chroma_exp_f3_final')"
+IDX_CHUNKER=item_titulo IDX_TABELA_CABECALHO=1 E5_PREFIXOS=1 python -c "import indexar; indexar.indexar_documentos('./documentos', './chroma_exp_f3_final_e5')"
+# avaliação (o prefixo de consulta do E5 entra depois de ::, as opções de consulta depois de @)
+python avaliar_retrieval.py --saida retrieval_resultado_fase3 \
+  --run "2C=./chroma_exp_fase2@gatilho=substring,listar=0" --run "+gatilho=./chroma_exp_fase2@gatilho=palavra,listar=0" \
+  --run "+listar=./chroma_exp_fase2@gatilho=palavra,listar=1" --run "+cab=./chroma_exp_f3_cab@gatilho=substring,listar=0" \
+  --run "+item=./chroma_exp_f3_item@gatilho=substring,listar=0" --run "+item+tit=./chroma_exp_f3_itemtit@gatilho=substring,listar=0" \
+  --run "final=./chroma_exp_f3_final@gatilho=palavra,listar=1" --run "final+e5=./chroma_exp_f3_final_e5::query: @gatilho=palavra,listar=1"
+```

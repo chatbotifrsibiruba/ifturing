@@ -58,6 +58,7 @@ from db import init_db, upsert_modelo, get_or_create_sessao, inserir_consulta
 from nucleo import (
     PASTA_CHROMA,
     MODELO_EMB,
+    PREFIXO_CONSULTA,
     TOP_K,
     _PADRAO_COTA,
     selecionar_cronograma,
@@ -126,7 +127,7 @@ def carregar_pipeline():
     print(f"[setup] {len(cronograma_docs)} chunks de cronograma pré-carregados")
 
     pipeline = Pipeline()
-    pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model=MODELO_EMB))
+    pipeline.add_component("embedder", SentenceTransformersTextEmbedder(model=MODELO_EMB, prefix=PREFIXO_CONSULTA))
     pipeline.add_component(
         "retriever",
         ChromaEmbeddingRetriever(document_store=document_store, top_k=TOP_K),
