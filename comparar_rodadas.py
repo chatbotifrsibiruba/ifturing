@@ -11,11 +11,11 @@ INSTALAÇÃO (uma vez):
     pip install pandas matplotlib
 
 USO:
-    # Usa os arquivos padrão: relatorio_ragas_agg.csv, _2_agg.csv, _3_agg.csv
+    # Usa os arquivos padrão: resultados/ragas/relatorio_ragas_agg.csv, _2_agg.csv, _3_agg.csv
     python comparar_rodadas.py
 
     # Especificando arquivos manualmente (qualquer quantidade)
-    python comparar_rodadas.py --arquivos relatorio_ragas_agg.csv relatorio_ragas_2_agg.csv relatorio_ragas_3_agg.csv
+    python comparar_rodadas.py --arquivos resultados/ragas/relatorio_ragas_agg.csv resultados/ragas/relatorio_ragas_2_agg.csv resultados/ragas/relatorio_ragas_3_agg.csv
 
 SAÍDA (pasta ./resultados/):
     tabela_rodadas.md          → tabela Markdown com média ± desvio padrão por modelo/métrica
@@ -162,7 +162,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--arquivos", nargs="+",
-        default=["relatorio_ragas_agg.csv", "relatorio_ragas_2_agg.csv", "relatorio_ragas_3_agg.csv"],
+        default=[
+            "resultados/ragas/relatorio_ragas_agg.csv",
+            "resultados/ragas/relatorio_ragas_2_agg.csv",
+            "resultados/ragas/relatorio_ragas_3_agg.csv",
+        ],
         help="Lista de arquivos *_agg.csv, um por rodada",
     )
     args = parser.parse_args()

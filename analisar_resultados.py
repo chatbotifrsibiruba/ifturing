@@ -1,7 +1,7 @@
 """
 analisar_resultados.py — Consolida os dados coletados para o artigo do ERBD
 
-Lê os arquivos gerados por app.py (logs/) e avaliar.py (relatorio_ragas*.csv)
+Lê os arquivos gerados por app.py (logs/) e avaliar.py (resultados/ragas/relatorio_ragas*.csv)
 e produz:
   - Tabelas resumo em Markdown (prontas pra colar no artigo)
   - Gráficos comparativos (latência, throughput, RAGAS) em PNG
@@ -15,7 +15,7 @@ USO:
     python analisar_resultados.py
 
     # Especificando arquivos
-    python analisar_resultados.py --ragas relatorio_ragas.csv --ragas-agg relatorio_ragas_agg.csv --logs-dir logs/
+    python analisar_resultados.py --ragas resultados/ragas/relatorio_ragas.csv --ragas-agg resultados/ragas/relatorio_ragas_agg.csv --logs-dir logs/
 
 SAÍDA (pasta ./analise/):
     tabela_desempenho.md       → latência/tokens por modelo (Markdown)
@@ -257,8 +257,8 @@ def grafico_ragas(df_ragas: pd.DataFrame):
 # ── Main ─────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ragas",     default="relatorio_ragas.csv")
-    parser.add_argument("--ragas-agg", default="relatorio_ragas_agg.csv")
+    parser.add_argument("--ragas",     default="resultados/ragas/relatorio_ragas.csv")
+    parser.add_argument("--ragas-agg", default="resultados/ragas/relatorio_ragas_agg.csv")
     parser.add_argument("--logs-dir",  default="logs")
     args = parser.parse_args()
 

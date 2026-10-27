@@ -5,7 +5,7 @@ histórico já coletado em vez de perdê-lo na migração pro banco.
 
 Uso:
     python migrar_csv_para_db.py
-    python migrar_csv_para_db.py --arquivos relatorio_ragas.csv relatorio_ragas_2.csv relatorio_ragas_3.csv
+    python migrar_csv_para_db.py --arquivos resultados/ragas/relatorio_ragas.csv resultados/ragas/relatorio_ragas_2.csv resultados/ragas/relatorio_ragas_3.csv
 """
 
 import csv
@@ -96,7 +96,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--arquivos", nargs="+",
-        default=["relatorio_ragas.csv", "relatorio_ragas_2.csv", "relatorio_ragas_3.csv"],
+        default=[
+            "resultados/ragas/relatorio_ragas.csv",
+            "resultados/ragas/relatorio_ragas_2.csv",
+            "resultados/ragas/relatorio_ragas_3.csv",
+        ],
         help="Lista de CSVs a migrar, em ordem de rodada",
     )
     args = parser.parse_args()

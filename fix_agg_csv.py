@@ -9,10 +9,10 @@ Uso:
     python fix_agg_csv.py
 
     # Rodada 2
-    python fix_agg_csv.py --dataset relatorio_ragas_2.csv --saida relatorio_ragas_2_agg.csv
+    python fix_agg_csv.py --dataset resultados/ragas/relatorio_ragas_2.csv --saida resultados/ragas/relatorio_ragas_2_agg.csv
 
     # Rodada 3
-    python fix_agg_csv.py --dataset relatorio_ragas_3.csv --saida relatorio_ragas_3_agg.csv
+    python fix_agg_csv.py --dataset resultados/ragas/relatorio_ragas_3.csv --saida resultados/ragas/relatorio_ragas_3_agg.csv
 """
 
 import csv
@@ -52,9 +52,9 @@ def media_segura(valores):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", default="relatorio_ragas.csv",
+    parser.add_argument("--dataset", default="resultados/ragas/relatorio_ragas.csv",
                          help="Arquivo bruto de entrada (uma linha por pergunta)")
-    parser.add_argument("--saida", default="relatorio_ragas_agg.csv",
+    parser.add_argument("--saida", default="resultados/ragas/relatorio_ragas_agg.csv",
                          help="Arquivo agregado de saída (uma linha por modelo)")
     args = parser.parse_args()
 

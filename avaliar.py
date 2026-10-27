@@ -38,8 +38,8 @@ USO:
     python avaliar.py --dataset golden_dataset.csv --branch llama3 --modelo llama3 --limite 10
 
 Gera:
-    relatorio_ragas.csv       → uma linha por pergunta, todas as branches juntas
-    relatorio_ragas_agg.csv   → uma linha por branch/modelo, pronto pra tabela do artigo
+    resultados/ragas/relatorio_ragas.csv       → uma linha por pergunta, todas as branches juntas
+    resultados/ragas/relatorio_ragas_agg.csv   → uma linha por branch/modelo, pronto pra tabela do artigo
 """
 
 import os
@@ -361,7 +361,7 @@ def main():
     parser.add_argument("--branch",  required=True, help="Nome da branch/config (ex: llama3, mistral, gemma)")
     parser.add_argument("--modelo",  required=True, help="ID do modelo Ollama (ex: llama3, mistral, gemma2:27b)")
     parser.add_argument("--limite",  type=int, default=None, help="Limitar número de perguntas (teste rápido)")
-    parser.add_argument("--saida",   default="relatorio_ragas.csv")
+    parser.add_argument("--saida",   default="resultados/ragas/relatorio_ragas.csv")
     args = parser.parse_args()
 
     modelo_cfg = {"tipo": "ollama", "modelo": args.modelo}
@@ -454,6 +454,7 @@ def main():
 
     # ── Salva CSV bruto (append entre execuções de branches diferentes) ──
     saida = Path(args.saida)
+    saida.parent.mkdir(parents=True, exist_ok=True)
     ja_existe = saida.exists()
     with open(saida, "a", newline="", encoding="utf-8") as f:
         campos = list(linhas_brutas[0].keys())
